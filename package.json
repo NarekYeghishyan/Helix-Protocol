@@ -1,0 +1,35 @@
+{
+  "name": "helix-protocol",
+  "version": "0.1.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "description": "A composable token, staking, governance and treasury suite for Solana.",
+  "scripts": {
+    "lint": "eslint . --ext .ts,.tsx && prettier --check \"**/*.{ts,tsx,json,md}\"",
+    "lint:fix": "eslint . --ext .ts,.tsx --fix && prettier --write \"**/*.{ts,tsx,json,md}\"",
+    "test": "anchor test",
+    "test:skip-build": "anchor test --skip-build",
+    "build": "anchor build",
+    "keys:sync": "anchor keys sync"
+  },
+  "devDependencies": {
+    "@types/bn.js": "^5.1.6",
+    "@types/chai": "^4.3.20",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^24.0.0",
+    "@typescript-eslint/eslint-plugin": "^8.0.0",
+    "@typescript-eslint/parser": "^8.0.0",
+    "chai": "^4.5.0",
+    "eslint": "^8.57.1",
+    "mocha": "^10.8.2",
+    "prettier": "^3.4.2",
+    "ts-mocha": "^10.1.0",
+    "typescript": "^5.7.2"
+  },
+  "dependencies": {
+    "@anchor-lang/core": "^1.1.2",
+    "@solana/spl-token": "^0.4.9",
+    "@solana/web3.js": "^1.98.0",
+    "bn.js": "^5.2.1"
+  }
+}

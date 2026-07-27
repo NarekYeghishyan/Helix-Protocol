@@ -1,0 +1,15 @@
+# Normalise line endings so the repo is identical whether it is checked out on
+# Windows or built inside WSL/Linux. Shell scripts must stay LF or they fail to
+# execute with a confusing "bad interpreter" error.
+* text=auto eol=lf
+
+*.sh   text eol=lf
+*.rs   text eol=lf
+*.ts   text eol=lf
+*.toml text eol=lf
+*.json text eol=lf
+*.md   text eol=lf
+
+*.so   binary
+*.png  binary
+*.jpg  binary

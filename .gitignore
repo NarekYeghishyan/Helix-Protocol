@@ -1,0 +1,44 @@
+# Rust / Anchor
+target/
+**/*.rs.bk
+Cargo.lock.orig
+.anchor/
+test-ledger/
+.surfpool/
+
+# Program keypairs — never commit deploy authorities or upgrade keys.
+# The *declared* program IDs live in Anchor.toml and declare_id!; the secret
+# keys that control them must stay local.
+target/deploy/*-keypair.json
+*.keypair.json
+keys/
+
+# Node
+node_modules/
+.pnp.*
+.yarn/
+dist/
+.next/
+out/
+*.tsbuildinfo
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Indexer
+indexer/data/
+*.sqlite
+*.sqlite-journal
+
+# Coverage
+coverage/
+lcov.info
+tarpaulin-report.html

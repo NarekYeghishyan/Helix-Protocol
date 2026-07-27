@@ -1,0 +1,133 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+  ANCHOR_VERSION: "1.1.2"
+  SOLANA_VERSION: "stable"
+
+jobs:
+  # Fast feedback: formatting and lints fail in under a minute, before anything
+  # spends 15 minutes building BPF bytecode.
+  lint:
+    name: Format & lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo fmt
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+
+  audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  test:
+    name: Build & test programs
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # BPF artifacts land outside the default target dir.
+          cache-directories: |
+            ~/.cache/solana
+            ~/.local/share/solana
+
+      - name: Install Solana CLI
+        run: |
+          sh -c "$(curl -sSfL https://release.anza.xyz/${SOLANA_VERSION}/install)"
+          echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
+
+      - name: Cache Anchor binary
+        id: anchor-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.avm
+          key: avm-${{ env.ANCHOR_VERSION }}-${{ runner.os }}
+
+      - name: Install Anchor
+        if: steps.anchor-cache.outputs.cache-hit != 'true'
+        run: |
+          cargo install --locked avm
+          avm install "$ANCHOR_VERSION"
+
+      - name: Select Anchor version
+        run: |
+          echo "$HOME/.avm/bin" >> "$GITHUB_PATH"
+          avm use "$ANCHOR_VERSION"
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Generate program keypairs
+        run: node scripts/gen-program-keys.mjs
+
+      - name: Verify declared program IDs match keypairs
+        run: anchor keys verify || (echo "::error::declare_id! does not match target/deploy keypairs — run 'anchor keys sync'" && exit 1)
+
+      - name: Rust unit tests
+        run: cargo test --workspace --lib
+
+      - name: Anchor integration tests
+        run: anchor test
+
+      - name: Upload build artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: programs
+          path: |
+            target/deploy/*.so
+            target/idl/*.json
+          retention-days: 14
+          if-no-files-found: warn
