@@ -195,6 +195,22 @@ genuinely cannot know the type, and every occurrence carries a `/// CHECK:` comm
 stating what validates it. Reviewers grep for `AccountInfo`; each one should answer
 its own question.
 
+**Large accounts are `Box`ed.** Anchor generates a `try_accounts` that deserialises
+every account in a struct into one stack frame, and SBF allows 4KB per frame.
+Token-2022 `Mint`/`TokenAccount` states are big enough that five of them in a single
+instruction overflow it:
+
+```text
+Stake::try_accounts       — 4104 > 4096
+Unstake::try_accounts     — 4336 > 4096
+ClaimStream::try_accounts — 4104 > 4096
+```
+
+The reason this matters more than it looks: `anchor build` prints these as `Error:` and
+then **exits 0 anyway**, emitting a `.so` that "builds fine" and may corrupt memory at
+runtime. Boxing moves the deserialised accounts to the heap. CI greps the build log for
+`stack offset` rather than trusting the exit code.
+
 **Events on every state transition**, consumed by [`indexer/`](../indexer) to build the
 analytics dashboard without polling account state.
 

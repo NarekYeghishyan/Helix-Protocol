@@ -718,6 +718,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "helix-governance"
+version = "0.1.0"
+dependencies = [
+ "anchor-lang",
+ "anchor-spl",
+ "helix-staking",
+ "helix-treasury",
+]
+
+[[package]]
 name = "helix-staking"
 version = "0.1.0"
 dependencies = [
@@ -727,6 +737,14 @@ dependencies = [
 
 [[package]]
 name = "helix-token-manager"
+version = "0.1.0"
+dependencies = [
+ "anchor-lang",
+ "anchor-spl",
+]
+
+[[package]]
+name = "helix-treasury"
 version = "0.1.0"
 dependencies = [
  "anchor-lang",

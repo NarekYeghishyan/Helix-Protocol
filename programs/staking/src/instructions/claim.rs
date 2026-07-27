@@ -17,7 +17,7 @@ pub struct Claim<'info> {
         has_one = reward_vault,
         has_one = reward_mint,
     )]
-    pub pool: Account<'info, Pool>,
+    pub pool: Box<Account<'info, Pool>>,
 
     pub owner: Signer<'info>,
 
@@ -33,9 +33,9 @@ pub struct Claim<'info> {
         has_one = pool @ StakingError::PositionPoolMismatch,
         has_one = owner,
     )]
-    pub position: Account<'info, Position>,
+    pub position: Box<Account<'info, Position>>,
 
-    pub reward_mint: InterfaceAccount<'info, Mint>,
+    pub reward_mint: Box<InterfaceAccount<'info, Mint>>,
 
     #[account(
         mut,
@@ -44,7 +44,7 @@ pub struct Claim<'info> {
         token::mint = reward_mint,
         token::token_program = token_program,
     )]
-    pub reward_vault: InterfaceAccount<'info, TokenAccount>,
+    pub reward_vault: Box<InterfaceAccount<'info, TokenAccount>>,
 
     #[account(
         mut,
@@ -52,7 +52,7 @@ pub struct Claim<'info> {
         token::authority = owner,
         token::token_program = token_program,
     )]
-    pub owner_reward_account: InterfaceAccount<'info, TokenAccount>,
+    pub owner_reward_account: Box<InterfaceAccount<'info, TokenAccount>>,
 
     /// CHECK: signs for the vault; identity fixed by seeds.
     #[account(

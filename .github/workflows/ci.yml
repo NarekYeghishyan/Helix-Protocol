@@ -115,6 +115,18 @@ jobs:
       - name: Verify declared program IDs match keypairs
         run: anchor keys verify || (echo "::error::declare_id! does not match target/deploy keypairs — run 'anchor keys sync'" && exit 1)
 
+      - name: Build programs and fail on SBF stack overflow
+        # `anchor build` reports "Stack offset of N exceeded max offset of 4096"
+        # as an error and then exits 0 regardless, shipping a program that may
+        # corrupt memory at runtime. The exit code cannot be trusted here.
+        run: |
+          set -o pipefail
+          anchor build 2>&1 | tee build.log
+          if grep -iE "stack offset|exceeded max offset" build.log; then
+            echo "::error::SBF stack frame overflow — Box the large accounts in the reported Accounts struct"
+            exit 1
+          fi
+
       - name: Rust unit tests
         run: cargo test --workspace --lib
 

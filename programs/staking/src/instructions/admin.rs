@@ -20,14 +20,14 @@ pub struct FundRewards<'info> {
         has_one = reward_vault,
         has_one = reward_mint,
     )]
-    pub pool: Account<'info, Pool>,
+    pub pool: Box<Account<'info, Pool>>,
 
     /// Anyone may top up the reward vault. Funding the pool can only benefit
     /// stakers, so there is no reason to restrict it to the authority.
     #[account(mut)]
     pub funder: Signer<'info>,
 
-    pub reward_mint: InterfaceAccount<'info, Mint>,
+    pub reward_mint: Box<InterfaceAccount<'info, Mint>>,
 
     #[account(
         mut,
@@ -35,7 +35,7 @@ pub struct FundRewards<'info> {
         token::authority = funder,
         token::token_program = token_program,
     )]
-    pub funder_token_account: InterfaceAccount<'info, TokenAccount>,
+    pub funder_token_account: Box<InterfaceAccount<'info, TokenAccount>>,
 
     #[account(
         mut,
@@ -44,7 +44,7 @@ pub struct FundRewards<'info> {
         token::mint = reward_mint,
         token::token_program = token_program,
     )]
-    pub reward_vault: InterfaceAccount<'info, TokenAccount>,
+    pub reward_vault: Box<InterfaceAccount<'info, TokenAccount>>,
 
     pub token_program: Interface<'info, TokenInterface>,
 }
@@ -109,7 +109,7 @@ pub struct SetRewardRate<'info> {
         has_one = authority @ StakingError::NotAuthority,
         has_one = reward_vault,
     )]
-    pub pool: Account<'info, Pool>,
+    pub pool: Box<Account<'info, Pool>>,
 
     pub authority: Signer<'info>,
 
@@ -117,7 +117,7 @@ pub struct SetRewardRate<'info> {
         seeds = [REWARD_VAULT_SEED, pool.key().as_ref()],
         bump,
     )]
-    pub reward_vault: InterfaceAccount<'info, TokenAccount>,
+    pub reward_vault: Box<InterfaceAccount<'info, TokenAccount>>,
 }
 
 /// Sets the emission rate and the timestamp emissions run until.
@@ -179,7 +179,7 @@ pub struct PoolAuthorityOnly<'info> {
         bump = pool.bump,
         has_one = authority @ StakingError::NotAuthority,
     )]
-    pub pool: Account<'info, Pool>,
+    pub pool: Box<Account<'info, Pool>>,
 
     pub authority: Signer<'info>,
 }
@@ -224,7 +224,7 @@ pub struct AcceptAuthority<'info> {
         seeds = [POOL_SEED, pool.stake_mint.as_ref(), pool.reward_mint.as_ref()],
         bump = pool.bump,
     )]
-    pub pool: Account<'info, Pool>,
+    pub pool: Box<Account<'info, Pool>>,
 
     /// The proposed successor, proving key custody by signing.
     pub new_authority: Signer<'info>,

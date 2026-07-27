@@ -11,6 +11,14 @@ use crate::errors::StakingError;
 use crate::events::Staked;
 use crate::state::{LockTier, Pool, Position};
 
+/// Note the `Box`ed accounts throughout.
+///
+/// Anchor generates a `try_accounts` that deserialises every account into a stack
+/// frame, and SBF allows 4KB per frame. Token-2022 `Mint`/`TokenAccount` states
+/// are large enough that five of them overflow it — the build reports
+/// "Stack offset of 4104 exceeded max offset of 4096" and *still exits zero*,
+/// leaving a program that may corrupt memory at runtime. Boxing moves the
+/// deserialised accounts to the heap and keeps the frame small.
 #[derive(Accounts)]
 #[instruction(position_id: u64)]
 pub struct Stake<'info> {
@@ -21,7 +29,7 @@ pub struct Stake<'info> {
         has_one = stake_vault,
         has_one = stake_mint,
     )]
-    pub pool: Account<'info, Pool>,
+    pub pool: Box<Account<'info, Pool>>,
 
     #[account(mut)]
     pub owner: Signer<'info>,
@@ -38,9 +46,9 @@ pub struct Stake<'info> {
         ],
         bump,
     )]
-    pub position: Account<'info, Position>,
+    pub position: Box<Account<'info, Position>>,
 
-    pub stake_mint: InterfaceAccount<'info, Mint>,
+    pub stake_mint: Box<InterfaceAccount<'info, Mint>>,
 
     #[account(
         mut,
@@ -48,7 +56,7 @@ pub struct Stake<'info> {
         token::authority = owner,
         token::token_program = token_program,
     )]
-    pub owner_token_account: InterfaceAccount<'info, TokenAccount>,
+    pub owner_token_account: Box<InterfaceAccount<'info, TokenAccount>>,
 
     #[account(
         mut,
@@ -57,7 +65,7 @@ pub struct Stake<'info> {
         token::mint = stake_mint,
         token::token_program = token_program,
     )]
-    pub stake_vault: InterfaceAccount<'info, TokenAccount>,
+    pub stake_vault: Box<InterfaceAccount<'info, TokenAccount>>,
 
     pub token_program: Interface<'info, TokenInterface>,
     pub system_program: Program<'info, System>,

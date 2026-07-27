@@ -28,7 +28,7 @@ pub struct InitializePool<'info> {
         seeds = [POOL_SEED, stake_mint.key().as_ref(), reward_mint.key().as_ref()],
         bump,
     )]
-    pub pool: Account<'info, Pool>,
+    pub pool: Box<Account<'info, Pool>>,
 
     /// CHECK: signs for both vaults. Never deserialised; identity fixed by seeds.
     #[account(
@@ -37,8 +37,8 @@ pub struct InitializePool<'info> {
     )]
     pub vault_authority: UncheckedAccount<'info>,
 
-    pub stake_mint: InterfaceAccount<'info, Mint>,
-    pub reward_mint: InterfaceAccount<'info, Mint>,
+    pub stake_mint: Box<InterfaceAccount<'info, Mint>>,
+    pub reward_mint: Box<InterfaceAccount<'info, Mint>>,
 
     #[account(
         init,
@@ -49,7 +49,7 @@ pub struct InitializePool<'info> {
         token::authority = vault_authority,
         token::token_program = token_program,
     )]
-    pub stake_vault: InterfaceAccount<'info, TokenAccount>,
+    pub stake_vault: Box<InterfaceAccount<'info, TokenAccount>>,
 
     #[account(
         init,
@@ -60,7 +60,7 @@ pub struct InitializePool<'info> {
         token::authority = vault_authority,
         token::token_program = token_program,
     )]
-    pub reward_vault: InterfaceAccount<'info, TokenAccount>,
+    pub reward_vault: Box<InterfaceAccount<'info, TokenAccount>>,
 
     pub token_program: Interface<'info, TokenInterface>,
     pub system_program: Program<'info, System>,

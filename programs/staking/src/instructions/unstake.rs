@@ -22,7 +22,7 @@ pub struct Unstake<'info> {
         has_one = stake_vault,
         has_one = stake_mint,
     )]
-    pub pool: Account<'info, Pool>,
+    pub pool: Box<Account<'info, Pool>>,
 
     #[account(mut)]
     pub owner: Signer<'info>,
@@ -39,9 +39,9 @@ pub struct Unstake<'info> {
         has_one = pool @ StakingError::PositionPoolMismatch,
         has_one = owner,
     )]
-    pub position: Account<'info, Position>,
+    pub position: Box<Account<'info, Position>>,
 
-    pub stake_mint: InterfaceAccount<'info, Mint>,
+    pub stake_mint: Box<InterfaceAccount<'info, Mint>>,
 
     #[account(
         mut,
@@ -50,7 +50,7 @@ pub struct Unstake<'info> {
         token::mint = stake_mint,
         token::token_program = token_program,
     )]
-    pub stake_vault: InterfaceAccount<'info, TokenAccount>,
+    pub stake_vault: Box<InterfaceAccount<'info, TokenAccount>>,
 
     #[account(
         mut,
@@ -58,7 +58,7 @@ pub struct Unstake<'info> {
         token::authority = owner,
         token::token_program = token_program,
     )]
-    pub owner_token_account: InterfaceAccount<'info, TokenAccount>,
+    pub owner_token_account: Box<InterfaceAccount<'info, TokenAccount>>,
 
     /// CHECK: signs for the vault; identity fixed by seeds.
     #[account(

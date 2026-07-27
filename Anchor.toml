@@ -5,17 +5,17 @@ anchor_version = "1.1.2"
 resolution = true
 skip-lint = false
 
-# Program IDs for helix_governance and helix_treasury are reserved in
-# target/deploy (see scripts/gen-program-keys.mjs) and are added here as each
-# program lands, so that `anchor build` and `anchor deploy` only ever reference
-# programs that actually exist.
 [programs.localnet]
 helix_token_manager = "5RU35Eni3MxkuSc9Zv5xm8LLd2QX85XdbYjRUaLkFRFr"
 helix_staking = "9RuZJZpgCwbiF9JRAsyR8cqDhFSaFYus1mzobKzEZzP3"
+helix_governance = "nSZnzJR8uUuZu8t1SqmLU2ExCvXNYABuVHwrDQJqSf5"
+helix_treasury = "B9HenpXUQzzGdT7mv93MQM8f6ytdPRKhJCbdx1CcBvdh"
 
 [programs.devnet]
 helix_token_manager = "5RU35Eni3MxkuSc9Zv5xm8LLd2QX85XdbYjRUaLkFRFr"
 helix_staking = "9RuZJZpgCwbiF9JRAsyR8cqDhFSaFYus1mzobKzEZzP3"
+helix_governance = "nSZnzJR8uUuZu8t1SqmLU2ExCvXNYABuVHwrDQJqSf5"
+helix_treasury = "B9HenpXUQzzGdT7mv93MQM8f6ytdPRKhJCbdx1CcBvdh"
 
 [provider]
 cluster = "localnet"

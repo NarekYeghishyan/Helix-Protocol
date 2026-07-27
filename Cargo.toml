@@ -17,6 +17,7 @@ anchor-spl = "1.1.2"
 # Added here as each program starts being consumed by another.
 helix-token-manager = { path = "programs/token-manager", features = ["cpi"] }
 helix-staking = { path = "programs/staking", features = ["cpi"] }
+helix-treasury = { path = "programs/treasury", features = ["cpi"] }
 
 [profile.release]
 overflow-checks = true

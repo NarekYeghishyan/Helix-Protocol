@@ -1,0 +1,33 @@
+[package]
+name = "helix-governance"
+description = "Proposal lifecycle, lock-gated voting, quorum and timelock."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "helix_governance"
+
+[features]
+default = []
+cpi = ["no-entrypoint"]
+no-entrypoint = []
+no-idl = []
+no-log-ix-name = []
+idl-build = ["anchor-lang/idl-build", "anchor-spl/idl-build"]
+
+[dependencies]
+anchor-lang = { workspace = true }
+anchor-spl = { workspace = true, features = ["token_2022"] }
+# Governance deserialises staking `Position` accounts to establish vote weight,
+# and CPIs into staking and treasury to execute passed proposals. The `cpi`
+# feature implies `no-entrypoint`, so neither program's entrypoint ends up in
+# this binary.
+helix-staking = { workspace = true }
+helix-treasury = { workspace = true }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("solana"))'] }
