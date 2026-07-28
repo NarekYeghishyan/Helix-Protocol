@@ -130,14 +130,15 @@ programs/
   governance/      proposal lifecycle, lock-gated voting, timelock
   treasury/        vault, vesting streams, per-epoch spend limits
 indexer/           event decoding, reorg-safe ingestion, projection, read API
+app/               Next.js dashboard and wallet connection over that API
 tests/integration/ runtime tests against the real BPF programs via LiteSVM
 scripts/           toolchain bootstrap, program keys, documentation link check
 docs/              the five deliverables above
 .github/workflows/ fmt, clippy -D warnings, doc links, cargo-audit, build, test
 ```
 
-`package.json` is scaffolding for the Phase 5 dashboard. There are no TypeScript sources
-yet, so CI does not pretend to lint any.
+The dashboard lives in [`app/`](./app) with its own `package.json` and lockfile; the root
+one is Anchor's.
 
 ## Testing
 
@@ -185,6 +186,29 @@ Building it found that `Unstaked` was not self-sufficient: reconstructing
 `pool.total_weighted` meant re-running the lock-tier table off chain, which would agree with
 the program until the day the table changed. The rule it produced — **an event that cannot
 be folded into state without recomputation is an incomplete event** — now applies to all 35.
+
+## Dashboard
+
+[`app/`](./app) — Next.js, wallet connection, cluster switching, and analytics over the
+read API.
+
+Two things it does that most dashboards do not:
+
+**Finality is on screen.** The API answers from either the projection the cluster will not
+take back or the one a fork still might, and every panel shows which, the slot, and how
+many of its transactions are revocable. Serving the optimistic view silently is how a TVL
+ends up decreasing for no reason the reader can see.
+
+**Three kinds of nothing look different.** "The indexer is not answering", "it has never
+seen this address" and "this pool genuinely has no stakers" are distinct facts. An empty
+table for all three is lying by omission — and with no ingestion source wired yet, every
+panel is currently in one of the first two.
+
+Amounts are rendered through `BigInt`. The API sends them as strings because `u64` exceeds
+what a JSON number holds exactly, and `Number(...)` on the client throws that away.
+
+The transaction flows (stake, claim, vote) are not built: they need a deployment to be
+worth writing against. → [`app/README.md`](./app/README.md).
 
 ## License
 

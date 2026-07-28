@@ -43,11 +43,31 @@ jobs:
       - name: Documentation links
         run: python3 scripts/check-doc-links.py
 
-      # No JavaScript or TypeScript sources exist yet, so there is nothing to
-      # lint and no lockfile to install from — `pnpm install --frozen-lockfile`
-      # failed on every run. `package.json` stays because Anchor's tooling
-      # expects one; the lint steps come back in the same commit that adds the
-      # Phase 5 dashboard, with a lockfile.
+  dashboard:
+    name: Dashboard
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      # `--ignore-scripts`: a transitive package's postinstall shells out to
+      # `yarn`, which nothing here depends on. `ci` rather than `install`, so a
+      # drifted lockfile fails instead of being silently rewritten.
+      - run: npm ci --ignore-scripts
+
+      # Node's built-in runner over TypeScript directly — no test framework and
+      # no build step, which is why this runs before the compile.
+      - run: npm test
+      - run: npm run typecheck
+      - run: npm run build
 
   audit:
     name: Dependency audit

@@ -22,7 +22,7 @@ says how much to trust each one.
 | 2 | Integration tests against a validator | ✅ Done — 74 runtime tests; found and fixed F-8 |
 | 3 | Devnet deployment + verifiable builds | ◐ Bootstrap measured, F-9 fixed; the deploy itself is blocked on devnet funding — **highest priority** |
 | 4 | Indexer + analytics API | ◐ Decode, ingestion and the read API built and tested; the RPC client and storage binding are the remainder |
-| 5 | Dashboard + wallet integration | ⬜ Not started |
+| 5 | Dashboard + wallet integration | ◐ Analytics views, wallet connection and cluster switching built; transaction flows need a deployment |
 | 6 | Fuzzing + external audit prep | ✅ Done — compute benchmarked, fuzzing found F-10, audit scoped in [AUDIT-READINESS.md](./AUDIT-READINESS.md) |
 | 7 | Governance migration (burn the admin keys) | ◐ 7.1 and 7.2 reachable and tested — F-11 fixed; 7.3 needs a deployment |
 
@@ -203,12 +203,32 @@ retention, webhook reliability) that is hard to predict from outside.
 
 *≈5–7 days, medium confidence*
 
-| Milestone | Deliverable | Est. |
-|---|---|---|
-| 5.1 | Next.js app, wallet-adapter, cluster switching | 1d |
-| 5.2 | Stake / unstake / claim flows with simulation before signing | 2d |
-| 5.3 | Governance UI: proposal list, vote, lifecycle state, timelock countdown | 2d |
-| 5.4 | Analytics views over the Phase 4 API | 1–2d |
+| Milestone | Deliverable | Est. | Status |
+|---|---|---|---|
+| 5.1 | Next.js app, wallet-adapter, cluster switching | 1d | ✅ Done |
+| 5.2 | Stake / unstake / claim flows with simulation before signing | 2d | ⬜ Needs a deployment |
+| 5.3 | Governance UI: proposal list, vote, lifecycle state, timelock countdown | 2d | ◐ Proposal list built; voting needs a deployment |
+| 5.4 | Analytics views over the Phase 4 API | 1–2d | ✅ Done |
+
+**5.1 and 5.4 are the half that does not need a chain.** [`app/`](../app) reads the Phase
+4 API, so it can be built and verified now; the write flows cannot, and pretending
+otherwise would produce buttons that have never been pressed.
+
+Two things the UI does that most dashboards do not, both inherited from decisions the API
+already made:
+
+- **Finality is on screen.** Every panel shows which projection it is reading, the slot,
+  and how many of its transactions a fork could still take back. A dashboard that silently
+  served `head` shows a TVL that sometimes decreases for no visible reason.
+- **Three kinds of nothing look different.** "The indexer is not answering", "the indexer
+  has never seen this address" and "this pool genuinely has no stakers" are distinct
+  states. Rendering all three as an empty table is lying by omission — and right now
+  every panel is in one of the first two, which is exactly when it matters.
+
+Amounts are formatted through `BigInt`, never a JavaScript number: the API sends strings
+precisely because `u64` exceeds what a JSON number represents exactly, and `Number(...)` on
+the client throws that away. Writing the test for it found a real bug — `BigInt("")` is
+`0n` rather than a throw, so a missing field rendered as a confident zero.
 
 **Recommendation:** simulate every transaction before presenting it for signature, and
 surface the decoded Anchor error rather than a raw code. The specific error enums exist
