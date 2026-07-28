@@ -10,7 +10,7 @@ is bounded by the honesty of its coverage claims.
 ```bash
 anchor build                                                  # required first — the
                                                               # runtime tests load .so files
-cargo test --workspace                                        # 178 tests: unit + doc + runtime
+cargo test --workspace                                        # 184 tests: unit + doc + runtime
 cargo test -p helix-staking --lib                             # one program's unit tests
 cargo test -p helix-staking --lib -- --nocapture rounding     # one test, with output
 
@@ -30,7 +30,7 @@ status code. See [F-3](./SECURITY-ASSESSMENT.md#f-3--sbf-stack-frame-overflow).
 
 ## What is covered
 
-**97 unit tests** over pure functions and state machines, and **81 runtime tests** against
+**103 unit tests** over pure functions and state machines, and **81 runtime tests** against
 the real BPF programs.
 
 ### Unit tests
@@ -51,6 +51,7 @@ the real BPF programs.
 | Log attribution | 10 | CPI depth tracking, foreign programs ignored, truncation and undecodable payloads reported, compute lines not mistaken for frame exits |
 | Projection | 6 | Idempotent replay, identical events in one transaction kept distinct, orphan tracking, APR undefined on an empty pool |
 | Ingestion | 9 | Reorg above the finality watermark reverted and replaced, contradiction below it refused, paged backfill equals a single pass, cursor resumption, anomalies surfaced |
+| Read API | 6 | The two finality views differ and each says which it is, a u64 past 2^53 survives a JSON round trip, undefined APR is null, small shares do not round away |
 
 ### Runtime tests
 

@@ -135,6 +135,12 @@ jobs:
       - name: Rust tests (unit + doc + runtime)
         run: cargo test --workspace
 
+      # The read API's HTTP transport is behind a feature, so `--workspace`
+      # alone never compiles it. Targeted rather than `--all-features`, which
+      # would also switch on Anchor's `idl-build` and break the program crates.
+      - name: Read API transport
+        run: cargo test -p helix-indexer --features server
+
       # `anchor test` is deliberately not run. The runtime suite is Rust against
       # LiteSVM, executed by the step above; there is no TypeScript suite, and
       # stubbing one green would report a passing integration run containing

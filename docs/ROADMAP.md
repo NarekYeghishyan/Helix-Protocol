@@ -21,7 +21,7 @@ says how much to trust each one.
 | 1 | Four programs, unit-tested | ✅ Done |
 | 2 | Integration tests against a validator | ✅ Done — 74 runtime tests; found and fixed F-8 |
 | 3 | Devnet deployment + verifiable builds | ◐ Bootstrap measured, F-9 fixed; the deploy itself is blocked on devnet funding — **highest priority** |
-| 4 | Indexer + analytics API | ◐ Decode, projection and reorg-safe ingestion built and tested; the RPC client and storage binding are the remainder |
+| 4 | Indexer + analytics API | ◐ Decode, ingestion and the read API built and tested; the RPC client and storage binding are the remainder |
 | 5 | Dashboard + wallet integration | ⬜ Not started |
 | 6 | Fuzzing + external audit prep | ✅ Done — compute benchmarked, fuzzing found F-10, audit scoped in [AUDIT-READINESS.md](./AUDIT-READINESS.md) |
 | 7 | Governance migration (burn the admin keys) | ◐ 7.1 and 7.2 reachable and tested — F-11 fixed; 7.3 needs a deployment |
@@ -138,7 +138,7 @@ nothing yet talks to a cluster or a database.
 | 4.1 | Event subscriber over RPC logs, with reorg handling | 1.5d | ◐ Reorg handling, finality watermark and cursor built and tested; the RPC client is the remainder |
 | 4.2 | Postgres schema + idempotent upserts keyed on `(signature, log_index)` | 1d | ◐ Schema written, binding not |
 | 4.3 | Backfill from genesis slot, resumable | 1d | ◐ Paging and cursor resumption tested; needs a real source to run against |
-| 4.4 | Read API: TVL, APR, staker distribution, proposal history, treasury flows | 1d | ◐ Computed in-process, not served |
+| 4.4 | Read API: TVL, APR, staker distribution, proposal history, treasury flows | 1d | ✅ Done — [`api.rs`](../indexer/src/api.rs) + an axum transport behind the `server` feature |
 
 **4.0 is deliberately the half that can be verified without a cluster.** Ingestion cannot
 be tested offline; decoding and folding are where the bugs that corrupt analytics
@@ -176,6 +176,25 @@ and an indexer that assumes exactly-once delivery reports wrong numbers precisel
 something has gone wrong elsewhere. The projection is keyed on `(signature, log_index)`,
 and events carry running totals rather than deltas so that assignment — which is
 replay-safe — beats accumulation, which is not.
+
+**4.4 answers with its own uncertainty attached.** Three decisions shape the responses,
+each because the obvious alternative is quietly wrong:
+
+- **Finality is part of the answer.** Every response names which projection it came from
+  and the slot it reflects. An API serving one without saying which invites a dashboard to
+  show a TVL that later drops for no visible reason. `?finality=head` is opt-in;
+  the default is the view that never gets revised.
+- **Amounts are strings.** JSON numbers are IEEE-754 doubles, exact below 2^53. Token
+  amounts are `u64`, and for a 9-decimal mint 2^53 base units is about nine million
+  tokens — reachable, and the failure is silent rounding in the browser rather than an
+  error. Same hazard `schema.sql` avoids with `NUMERIC(20, 0)` over `BIGINT`.
+- **Undefined is `null`.** APR over an empty pool is undefined, not zero. A plausible
+  wrong number on a dashboard is worse than a gap.
+
+The split is the same one used twice already: the read model is pure and always compiled,
+the axum wiring is behind a `server` feature so `cargo test --workspace` does not pay for
+an async runtime to test functions with no I/O. Routing that contains logic is routing
+nobody tests.
 
 Medium confidence on the remainder because it depends on RPC provider behaviour (log
 retention, webhook reliability) that is hard to predict from outside.

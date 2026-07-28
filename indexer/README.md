@@ -7,7 +7,8 @@ history is reconstructable from transaction logs without polling account state.
 This crate does the reconstructing — decode, attribute, fold.
 
 ```bash
-cargo test -p helix-indexer                                        # 32 unit tests
+cargo test -p helix-indexer                                        # 38 unit tests
+cargo test -p helix-indexer --features server                       # 40, incl. the transport
 cargo test -p helix-integration-tests --test indexer_reconciliation # 8 against the chain
 ```
 
@@ -167,14 +168,50 @@ are now recorded in `orphaned`.
 | [`projection.rs`](./src/projection.rs) | Folding events into queryable state, exactly once each |
 | [`source.rs`](./src/source.rs) | The `LogSource` trait, and a scripted source that can roll a slot back on demand |
 | [`ingest.rs`](./src/ingest.rs) | Driving a source into the projection, safely across reorgs |
+| [`api.rs`](./src/api.rs) | The read model — pure functions from a projection to serialisable views |
+| [`server.rs`](./src/server.rs) | HTTP transport, behind the `server` feature |
 | [`sql/schema.sql`](./sql/schema.sql) | Postgres DDL for the persistent form — **written, not yet exercised** |
 
-## Read views
+## The read API
 
-`Analytics` exposes what the dashboard needs: `tvl`, `apr_bps`,
-`staker_distribution`, `proposal_history`, `treasury_balance`,
-`committed_to_streams`.
+```bash
+cargo run -p helix-indexer --features server --bin helix-api
+```
 
-`apr_bps` returns `None` rather than a number when nothing is staked. A rate over
-an empty pool is not an infinite APR, it is an undefined one, and returning a
-figure is how dashboards end up showing `∞%`.
+```text
+GET /health
+GET /pools/{address}[?finality=head]
+GET /pools/{address}/stakers[?limit=50]
+GET /realms/{address}/proposals
+GET /treasuries/{address}
+```
+
+It serves an empty projection until the RPC `LogSource` exists. That is stated on startup
+rather than hidden, because a demo that looks live and is not is worse than one that says
+so.
+
+Three decisions shape every response, each because the obvious alternative is quietly
+wrong.
+
+**Finality is part of the answer.** Every response carries the projection it came from and
+the slot it reflects:
+
+```json
+{ "meta": { "finality": "finalized", "slot": 1, "pending_transactions": 0 },
+  "data": { "total_staked": "1000", "apr_bps": null, ... } }
+```
+
+Serving one view without saying which invites a dashboard to display a TVL that later
+decreases for no visible reason. `?finality=head` is opt-in, and an unrecognised value
+falls back to `finalized` — a typo should not silently promote a caller to data a fork can
+take back.
+
+**Amounts are strings.** JSON numbers are IEEE-754 doubles, exact only below 2^53. Token
+amounts are `u64`; for a 9-decimal mint, 2^53 base units is about nine million tokens.
+That is reachable, and the failure mode is silent rounding in whatever parses it rather
+than an error. `an_amount_past_the_double_precision_limit_survives_a_json_round_trip`
+pins it, and asserts the value genuinely does not fit in a double so the test cannot go
+vacuous.
+
+**Undefined is `null`, never zero.** A rate over an empty pool is not an infinite APR or a
+zero one, it is undefined. Returning `0` puts a plausible, wrong number on a dashboard.

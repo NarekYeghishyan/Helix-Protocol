@@ -8,7 +8,7 @@ Rust with the Anchor framework.
 [![Solana](https://img.shields.io/badge/solana-3.x-purple)](https://solana.com)
 [![License](https://img.shields.io/badge/license-Apache--2.0-green)](./LICENSE)
 
-> **Status: unaudited. Not deployed.** All four programs build to BPF and pass 178 tests
+> **Status: unaudited. Not deployed.** All four programs build to BPF and pass 184 tests
 > locally, including runtime tests that execute the full governance → treasury authority
 > chain and a real Token-2022 mint with transfer fees. The analytics stack and a devnet
 > deployment are scoped in [ROADMAP.md](./docs/ROADMAP.md). Nothing here has held real
@@ -129,7 +129,7 @@ programs/
   staking/         lock tiers, reward accumulator, position accounting
   governance/      proposal lifecycle, lock-gated voting, timelock
   treasury/        vault, vesting streams, per-epoch spend limits
-indexer/           event decoding, reorg-safe ingestion, state projection
+indexer/           event decoding, reorg-safe ingestion, projection, read API
 tests/integration/ runtime tests against the real BPF programs via LiteSVM
 scripts/           toolchain bootstrap, program keys, documentation link check
 docs/              the five deliverables above
@@ -144,12 +144,12 @@ yet, so CI does not pretend to lint any.
 ```bash
 anchor build 2>&1 | tee build.log
 grep -i "stack offset" build.log   # must be empty — anchor build exits 0 even when it isn't
-cargo test --workspace             # 178 tests: unit + doc + runtime
+cargo test --workspace             # 184 tests: unit + doc + runtime
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all -- --check
 ```
 
-**97 unit tests** cover the reward accumulator, vesting schedule, tally arithmetic and
+**103 unit tests** cover the reward accumulator, vesting schedule, tally arithmetic and
 every state machine directly — including a differential check that fixed-point rounding
 never favours the user over the pool.
 

@@ -24,3 +24,27 @@ helix-treasury = { path = "../programs/treasury", features = ["no-entrypoint"] }
 
 # Anchor writes event payloads as base64 on `Program data:` lines.
 base64 = "0.22"
+
+# Already in the graph via anchor-lang, so this adds nothing new.
+serde = { version = "1", features = ["derive"] }
+
+# The HTTP transport is optional. The read model in `api.rs` is pure and always
+# compiled; only the wiring in `server.rs` needs a runtime, and keeping it behind
+# a feature means `cargo test --workspace` does not pay for tokio to test logic
+# that has no I/O in it. CI lints with `--all-features`, so the server is still
+# checked.
+axum = { version = "0.8", optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"], optional = true }
+
+[dev-dependencies]
+serde_json = "1"
+
+[features]
+default = []
+server = ["dep:axum", "dep:tokio"]
+
+# Cargo builds every `src/bin/*.rs` by default, so without this the binary is
+# compiled even when the feature that supplies its dependencies is off.
+[[bin]]
+name = "helix-api"
+required-features = ["server"]

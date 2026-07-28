@@ -40,12 +40,16 @@
 //! indexer that drops what it cannot read reports wrong numbers precisely when
 //! something unusual happened, which is exactly when someone is looking at them.
 
+pub mod api;
 pub mod event;
 pub mod ingest;
 pub mod logs;
 pub mod projection;
+#[cfg(feature = "server")]
+pub mod server;
 pub mod source;
 
+pub use api::{Api, Finality};
 pub use event::{HelixEvent, Program};
 pub use ingest::{IngestError, Ingestor, PollOutcome};
 pub use logs::{parse, Anomaly, EmittedEvent, ParsedLogs};
