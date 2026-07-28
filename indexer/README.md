@@ -7,8 +7,8 @@ history is reconstructable from transaction logs without polling account state.
 This crate does the reconstructing — decode, attribute, fold.
 
 ```bash
-cargo test -p helix-indexer                                        # 23 unit tests
-cargo test -p helix-integration-tests --test indexer_reconciliation # 7 against the chain
+cargo test -p helix-indexer                                        # 32 unit tests
+cargo test -p helix-integration-tests --test indexer_reconciliation # 8 against the chain
 ```
 
 ## What it is not
@@ -24,8 +24,15 @@ does: real transactions, the runtime's own logs, and the resulting projection
 compared to the accounts those transactions wrote, field by field.
 
 An analytics stack that claims to match the chain and cannot demonstrate it is a
-rumour. What remains — the subscriber, the backfill, the Postgres binding, the
-read API — is [Phase 4 remainder](../docs/ROADMAP.md#phase-4--indexer-and-analytics-api).
+rumour.
+
+The same split runs through ingestion. *Deciding* what to do with what a source returns —
+holding the unfinalised tail, noticing it has been replaced, rebuilding, promoting to
+final, advancing the cursor — is [`ingest.rs`](./src/ingest.rs) and is tested against a
+scripted source that rolls slots back on demand. *Talking to an RPC node* is the
+`LogSource` implementation that does not exist yet. Devnet cannot be asked to fork; a fake
+can. What remains is that client, the Postgres binding and the read API —
+[Phase 4 remainder](../docs/ROADMAP.md#phase-4--indexer-and-analytics-api).
 
 ## Why Rust, and why it links the programs
 
@@ -77,6 +84,42 @@ for an entity never seen created is recorded in `orphaned`. An indexer that drop
 what it cannot read reports wrong numbers precisely when something unusual
 happened, which is exactly when someone is looking at them.
 
+## Reorgs
+
+Confirmed is not final. A slot the cluster has already served can be rolled back and
+replaced, so an indexer that folds every transaction straight into one projection has no
+way to un-fold the ones that turn out never to have happened — and it will be wrong
+quietly, because nothing about the arithmetic looks unusual afterwards.
+
+Two projections and a replay buffer:
+
+```text
+  finalized  ── state through the cluster's finalized slot; never rewound
+  pending    ── transactions above it, kept in order so they can be replayed
+  head       ── finalized + pending, which is what queries read
+```
+
+Every poll re-reads the whole unfinalised range rather than asking for a diff. That is the
+point: a rollback then shows up as the source *disagreeing* with the buffer, which can be
+detected, rather than as a transaction simply never being mentioned again, which cannot.
+
+On disagreement, `head` is rebuilt from `finalized` and the source's current view replayed
+over it. Rebuilding rather than reversing is deliberate — inverting an arbitrary fold
+needs every projection field to have an inverse, and `saturating_sub` does not.
+
+A contradiction *below* the finality watermark is refused outright rather than treated as
+a reorg. Finalised history does not change, so a source that reports otherwise is either
+lying or serving a different ledger, and every number downstream is suspect.
+
+**What this cannot do:** a source that silently omits a transaction — an RPC provider
+dropping a log, not a rollback — is indistinguishable from that transaction never
+existing. The defence is `orphaned`: a later event referring to an entity that was never
+created is the symptom, and it is reported.
+
+The reorg path is exercised over real program output too, not only synthetic events:
+`the_ingestor_survives_a_reorg_and_still_matches_the_chain` captures logs from the real
+BPF programs, rolls back two slots, and checks the rebuilt projection.
+
 ## Verified how
 
 The reconciliation tests were **mutation-tested**. Attributing events to the
@@ -122,6 +165,8 @@ are now recorded in `orphaned`.
 | [`event.rs`](./src/event.rs) | The 34 event types, and decoding one from its wire form |
 | [`logs.rs`](./src/logs.rs) | Attributing `Program data:` lines to the invocation that emitted them |
 | [`projection.rs`](./src/projection.rs) | Folding events into queryable state, exactly once each |
+| [`source.rs`](./src/source.rs) | The `LogSource` trait, and a scripted source that can roll a slot back on demand |
+| [`ingest.rs`](./src/ingest.rs) | Driving a source into the projection, safely across reorgs |
 | [`sql/schema.sql`](./sql/schema.sql) | Postgres DDL for the persistent form — **written, not yet exercised** |
 
 ## Read views

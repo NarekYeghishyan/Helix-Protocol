@@ -10,7 +10,7 @@ is bounded by the honesty of its coverage claims.
 ```bash
 anchor build                                                  # required first — the
                                                               # runtime tests load .so files
-cargo test --workspace                                        # 168 tests: unit + doc + runtime
+cargo test --workspace                                        # 178 tests: unit + doc + runtime
 cargo test -p helix-staking --lib                             # one program's unit tests
 cargo test -p helix-staking --lib -- --nocapture rounding     # one test, with output
 
@@ -30,7 +30,7 @@ status code. See [F-3](./SECURITY-ASSESSMENT.md#f-3--sbf-stack-frame-overflow).
 
 ## What is covered
 
-**88 unit tests** over pure functions and state machines, and **80 runtime tests** against
+**97 unit tests** over pure functions and state machines, and **81 runtime tests** against
 the real BPF programs.
 
 ### Unit tests
@@ -50,6 +50,7 @@ the real BPF programs.
 | Event decoding | 7 | Wire-format round trip, truncated and trailing-byte payloads rejected, decoding scoped to the emitting program |
 | Log attribution | 10 | CPI depth tracking, foreign programs ignored, truncation and undecodable payloads reported, compute lines not mistaken for frame exits |
 | Projection | 6 | Idempotent replay, identical events in one transaction kept distinct, orphan tracking, APR undefined on an empty pool |
+| Ingestion | 9 | Reorg above the finality watermark reverted and replaced, contradiction below it refused, paged backfill equals a single pass, cursor resumption, anomalies surfaced |
 
 ### Runtime tests
 
@@ -65,7 +66,7 @@ the real BPF programs.
 | `compute_budget.rs` | 5 | §6.3 — compute measured across a 64× sweep in staker and voter count, plus a budget ceiling on every hot-path instruction |
 | `fuzz_invariants.rs` | 7 | §1.1–1.4, §3.1–3.2, §4.1, §4.3, §4.5–4.6 asserted after every operation of 22 random sequences, plus the tests that keep the campaign honest |
 | `realm_authority.rs` | 6 | §4.14, §4.15 — F-11: the realm's parameters reachable by proposal, the human authority revocable, and the attack that was possible before both |
-| `indexer_reconciliation.rs` | 7 | The [indexer's](../indexer) projection compared to on-chain accounts field by field, over the staking lifecycle, a fee-bearing mint, the governance lifecycle including nested CPI, replay, and partial history |
+| `indexer_reconciliation.rs` | 8 | The [indexer's](../indexer) projection compared to on-chain accounts field by field, over the staking lifecycle, a fee-bearing mint, the governance lifecycle including nested CPI, replay, and partial history |
 
 ### Testing conventions worth copying
 

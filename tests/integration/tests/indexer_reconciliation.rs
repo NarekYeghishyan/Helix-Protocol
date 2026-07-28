@@ -11,9 +11,11 @@
 //! are read back out of the accounts rather than restated.
 //!
 //! What this can and cannot show: it proves the decode-and-fold path agrees with
-//! the chain over the flows exercised here. It says nothing about RPC delivery,
-//! reorgs, or backfill — none of which exist yet, and all of which are Phase 4
-//! remainder. See [`docs/ROADMAP.md`](../../../docs/ROADMAP.md).
+//! the chain over the flows exercised here, and — in
+//! `the_ingestor_survives_a_reorg_and_still_matches_the_chain` — that the same
+//! agreement survives a fork taking transactions back. It says nothing about RPC
+//! delivery, which is the one part of ingestion still missing. See
+//! [`docs/ROADMAP.md`](../../../docs/ROADMAP.md).
 
 use helix_governance::state::{ProposalAction, ProposalState, VoteChoice};
 use helix_indexer::projection::Analytics;
@@ -483,6 +485,117 @@ fn partial_history_is_reported_rather_than_silently_wrong() {
         indexed.analytics.treasuries[&indexed.sys.treasury].total_deposited, chain.total_deposited,
         "a running total should recover the figure despite the missed history"
     );
+}
+
+/// The ingestor, driven by logs the real programs produced, survives a reorg and
+/// still agrees with the chain.
+///
+/// The tests above feed the projection directly. This one goes through
+/// [`helix_indexer::Ingestor`], which is the path a deployment actually uses:
+/// poll, hold the unfinalised tail, promote it when the cluster finalises, and
+/// rebuild if the tail is replaced. Real logs, so the reorg is exercised over
+/// events with real structure rather than synthetic ones.
+#[test]
+fn the_ingestor_survives_a_reorg_and_still_matches_the_chain() {
+    use helix_indexer::source::ScriptedSource;
+    use helix_indexer::Ingestor;
+
+    let mut sys = System::bootstrap(None, 0);
+    let mut source = ScriptedSource::new();
+    let mut slot = 0u64;
+
+    // Every transaction is captured as the cluster would serve it.
+    let record = |sys: &mut System, ix, signers: &[&Keypair], slot: &mut u64| {
+        *slot += 1;
+        let meta = sys.env.send_metered(&[ix], signers);
+        (format!("sig-{slot}"), *slot, meta.logs)
+    };
+
+    let ix = sys.fund_rewards_ix(REWARD_FUNDING);
+    let (sig, s, logs) = record(&mut sys, ix, &[], &mut slot);
+    source.push(&sig, s, logs);
+
+    // Three stakes, the last two of which will be rolled back.
+    let mut stakers = Vec::new();
+    for _ in 0..3 {
+        let owner = Keypair::new();
+        let (tokens, position_id) = sys.prepare_staker(&owner.pubkey(), STAKE);
+        let ix = sys.stake_ix_for(
+            &owner.pubkey(),
+            &tokens,
+            position_id,
+            STAKE,
+            LockTier::Bronze,
+        );
+        let (sig, s, logs) = record(&mut sys, ix, &[&owner], &mut slot);
+        source.push(&sig, s, logs);
+        stakers.push(owner);
+    }
+
+    // The cluster has finalised only the funding and the first stake.
+    source.finalize_through(2);
+
+    let mut ingestor = Ingestor::new();
+    let outcome = ingestor.poll(&mut source, 100).expect("first poll");
+    assert_eq!(outcome.applied, 4);
+    assert_eq!(outcome.finalized, 2);
+    assert!(!outcome.was_reorg());
+
+    // Head sees all three stakes and matches the chain exactly.
+    let chain: Pool = sys.env.anchor_account(&sys.pool);
+    assert_eq!(
+        ingestor.head().tvl(&sys.pool),
+        chain.total_staked,
+        "head disagrees with the chain before any reorg"
+    );
+    assert_eq!(
+        ingestor.finalized().tvl(&sys.pool),
+        STAKE,
+        "only the first stake is final"
+    );
+
+    // The pool was created during bootstrap, before the indexer existed, so the
+    // first event touching it is already recorded as partial history — see
+    // `partial_history_is_reported_rather_than_silently_wrong`. What matters
+    // after the reorg is that rebuilding does not add to this.
+    let orphans_before = ingestor.head().orphaned.len();
+
+    // The last two slots are rolled back and one of them is replaced.
+    source.roll_back_to(2);
+    let owner = Keypair::new();
+    let (tokens, position_id) = sys.prepare_staker(&owner.pubkey(), STAKE);
+    let ix = sys.stake_ix_for(
+        &owner.pubkey(),
+        &tokens,
+        position_id,
+        STAKE,
+        LockTier::Bronze,
+    );
+    let meta = sys.env.send_metered(&[ix], &[&owner]);
+    source.push("sig-replacement", 3, meta.logs);
+    source.finalize_through(3);
+
+    let outcome = ingestor.poll(&mut source, 100).expect("second poll");
+    assert!(outcome.was_reorg(), "the rollback went unnoticed");
+    assert_eq!(outcome.reverted, Some(2));
+
+    // Two stakes survive the fork: the finalised one and the replacement. The
+    // chain itself never rolled back — LiteSVM has no forks — so this compares
+    // against what the *surviving* transactions did, which is the honest
+    // comparison for a reorg test.
+    assert_eq!(
+        ingestor.head().tvl(&sys.pool),
+        2 * STAKE,
+        "reverted stakes were not removed, or the replacement was lost"
+    );
+    assert_eq!(ingestor.head().pools[&sys.pool].position_count, 2);
+    assert_eq!(
+        ingestor.head().orphaned.len(),
+        orphans_before,
+        "rebuilding after the reorg left dangling references that were not there          before: {:?}",
+        ingestor.head().orphaned
+    );
+    assert_eq!(ingestor.cursor().slot, 3, "the cursor did not advance");
 }
 
 /// Every event the staking program emits must decode.

@@ -38,7 +38,7 @@ liquid staking derivatives. Reasons in [ROADMAP.md](./ROADMAP.md#explicitly-out-
 
 | | |
 |---|---|
-| Tests | 168 — 88 unit, 80 runtime against the real BPF programs |
+| Tests | 178 — 97 unit, 81 runtime against the real BPF programs |
 | Invariants | 57 documented, 54 verified, 3 untested — [INVARIANTS.md](./INVARIANTS.md) |
 | Fuzzing | Stateful, invariants as the oracle, 22 sequences × 150 operations per run |
 | Compute | Every instruction measured; worst is 17.9% of the default budget |

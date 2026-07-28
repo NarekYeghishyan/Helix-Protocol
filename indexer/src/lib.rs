@@ -41,9 +41,13 @@
 //! something unusual happened, which is exactly when someone is looking at them.
 
 pub mod event;
+pub mod ingest;
 pub mod logs;
 pub mod projection;
+pub mod source;
 
 pub use event::{HelixEvent, Program};
+pub use ingest::{IngestError, Ingestor, PollOutcome};
 pub use logs::{parse, Anomaly, EmittedEvent, ParsedLogs};
 pub use projection::{Analytics, EventId};
+pub use source::{Cursor, LogSource, TransactionLogs};

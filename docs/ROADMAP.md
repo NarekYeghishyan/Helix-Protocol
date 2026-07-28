@@ -21,7 +21,7 @@ says how much to trust each one.
 | 1 | Four programs, unit-tested | ✅ Done |
 | 2 | Integration tests against a validator | ✅ Done — 74 runtime tests; found and fixed F-8 |
 | 3 | Devnet deployment + verifiable builds | ◐ Bootstrap measured, F-9 fixed; the deploy itself is blocked on devnet funding — **highest priority** |
-| 4 | Indexer + analytics API | ◐ Decode and projection built and reconciled against the chain; ingestion and storage not started |
+| 4 | Indexer + analytics API | ◐ Decode, projection and reorg-safe ingestion built and tested; the RPC client and storage binding are the remainder |
 | 5 | Dashboard + wallet integration | ⬜ Not started |
 | 6 | Fuzzing + external audit prep | ✅ Done — compute benchmarked, fuzzing found F-10, audit scoped in [AUDIT-READINESS.md](./AUDIT-READINESS.md) |
 | 7 | Governance migration (burn the admin keys) | ◐ 7.1 and 7.2 reachable and tested — F-11 fixed; 7.3 needs a deployment |
@@ -33,16 +33,21 @@ says how much to trust each one.
 The ordering follows one rule: **retire the largest unknown next**, not the most
 visible feature.
 
-Right now the largest unknown is not a missing feature, it is that the cross-program
-wiring has only been proven to *compile*. The reward maths, the vesting schedule and
-the tally arithmetic are tested directly, but "governance's executor PDA can actually
-sign a treasury spend" is currently an assertion about types, not an observed fact.
-Building a dashboard before proving that would mean building UI on top of an unverified
-protocol — and if the wiring is wrong, some of it has to be rebuilt.
+That unknown used to be the cross-program wiring, which had only been proven to
+*compile*. It is now executed end to end by 80 runtime tests and driven in random order by
+a fuzzer, and along the way it produced F-8, F-9, F-10 and F-11 — so the rule paid for
+itself and that particular unknown is retired.
+
+**The largest unknown now is ingestion, not the protocol.** An indexer folding confirmed
+transactions straight into one projection has no way to un-fold the ones a fork takes
+back; it will be wrong, and quietly, because nothing about the arithmetic looks unusual
+afterwards. That is a bug class the programs cannot have and the dashboard cannot detect.
 
 A dashboard is what a stakeholder can see, so there is real pressure to build it early.
-It is the wrong call, and the reason is worth stating plainly: a demo over unproven
-programs creates confidence that the system does not yet deserve.
+It is still the wrong call, for a reason that has simply moved: it would now sit on top of
+a data pipeline with no source. A demo over unproven programs creates confidence the
+system does not deserve; a demo over invented data creates confidence in numbers that
+came from nowhere.
 
 ---
 
@@ -130,9 +135,9 @@ nothing yet talks to a cluster or a database.
 | Milestone | Deliverable | Est. | Status |
 |---|---|---|---|
 | 4.0 | Event decoding and log attribution, reconciled against the chain | 1.5d | ✅ Done |
-| 4.1 | Event subscriber over RPC logs, with reorg handling | 1.5d | ⬜ |
+| 4.1 | Event subscriber over RPC logs, with reorg handling | 1.5d | ◐ Reorg handling, finality watermark and cursor built and tested; the RPC client is the remainder |
 | 4.2 | Postgres schema + idempotent upserts keyed on `(signature, log_index)` | 1d | ◐ Schema written, binding not |
-| 4.3 | Backfill from genesis slot, resumable | 1d | ⬜ |
+| 4.3 | Backfill from genesis slot, resumable | 1d | ◐ Paging and cursor resumption tested; needs a real source to run against |
 | 4.4 | Read API: TVL, APR, staker distribution, proposal history, treasury flows | 1d | ◐ Computed in-process, not served |
 
 **4.0 is deliberately the half that can be verified without a cluster.** Ingestion cannot
@@ -148,6 +153,22 @@ a second implementation that agrees with the program until the table changes. An
 `treasury_balance` silently returned 0 for a treasury whose deposits predated the indexer,
 with nothing marking the figure as computed from partial history. Both fixed; see
 [W-8](./ARCHITECTURE-REVIEW.md#weaknesses).
+
+**4.1 and 4.3 are split the same way 4.0 was**, and for the same reason: the parts that
+cannot be tested without a cluster are separated from the parts where the bugs live.
+[`source.rs`](../indexer/src/source.rs) is a `LogSource` trait; the RPC implementation of
+it is the only piece still missing. Everything that *decides what to do* with what a
+source returns — hold the unfinalised tail, detect that it has been replaced, rebuild,
+promote to final, advance the cursor — is in [`ingest.rs`](../indexer/src/ingest.rs) and
+is driven by a scripted source that can roll a slot back on demand. Devnet cannot be asked
+to fork; a fake can.
+
+The design is two projections and a replay buffer. `finalized` never rewinds, `head` is
+what queries read, and a reorg rebuilds `head` from `finalized` rather than trying to
+reverse the fold — inverting an arbitrary projection needs every field to have an inverse,
+and `saturating_sub` does not. A contradiction *below* the finality watermark is not a
+reorg and is refused outright: finalised history does not change, so either the source is
+lying or the stored cursor belongs to another ledger.
 
 **Recommendation, now acted on:** make ingestion idempotent from the start and treat
 every event as possibly-redelivered. Confirmed-commitment logs can still be rolled back,
