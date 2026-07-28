@@ -15,7 +15,7 @@
 //!
 //! | Module | Responsibility |
 //! |---|---|
-//! | [`event`] | The 34 event types, and decoding one from its wire form |
+//! | [`event`] | The 35 event types, and decoding one from its wire form |
 //! | [`logs`] | Attributing `Program data:` lines to the invocation that emitted them |
 //! | [`projection`] | Folding events into queryable state, exactly once each |
 //!

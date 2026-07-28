@@ -219,7 +219,7 @@ principal remaining, but not the position's remaining vote weight — so reconst
 `pool.total_weighted` off chain meant re-running `LockTier::apply_weight`, a second
 implementation of the weight table that agrees with the program right up until the table
 changes, and then disagrees silently. It now carries `weighted_amount`. Applied across all
-34 events, that was the only one which failed the rule.
+35 events, that was the only one which failed the rule.
 
 The second was subtler and was found by a test bug rather than by review: an analytics
 figure computed from history the indexer had not seen returned `0` and looked like a

@@ -10,7 +10,7 @@ is bounded by the honesty of its coverage claims.
 ```bash
 anchor build                                                  # required first — the
                                                               # runtime tests load .so files
-cargo test --workspace                                        # 184 tests: unit + doc + runtime
+cargo test --workspace                                        # 185 tests: unit + doc + runtime
 cargo test -p helix-staking --lib                             # one program's unit tests
 cargo test -p helix-staking --lib -- --nocapture rounding     # one test, with output
 
@@ -30,7 +30,7 @@ status code. See [F-3](./SECURITY-ASSESSMENT.md#f-3--sbf-stack-frame-overflow).
 
 ## What is covered
 
-**103 unit tests** over pure functions and state machines, and **81 runtime tests** against
+**103 unit tests** over pure functions and state machines, and **82 runtime tests** against
 the real BPF programs.
 
 ### Unit tests
@@ -63,7 +63,7 @@ the real BPF programs.
 | `governance_e2e.rs` | 15 | §4.1–4.7, §4.11–4.13, §5.1 — the authority chain plus one negative test per threat-model attack |
 | `vesting_e2e.rs` | 12 | §1.5, §1.6, §7.5, §7.7–7.9 — grant → cliff → claim → revoke, forward-only revocation, committed balance protection, executor migration |
 | `bootstrap_atomicity.rs` | 3 | F-1's mitigation: the bootstrap fits one transaction (748 B / 17 accounts, asserted against the 1232-byte limit), and re-initialisation fails afterwards |
-| `token_admin_e2e.rs` | 7 | §5.2, §5.4, §5.9, §5.10 — the token-manager admin handover in real deployment order, and that governance then holds every admin power |
+| `token_admin_e2e.rs` | 8 | §5.2, §5.4, §5.9, §5.10 — the token-manager admin handover in real deployment order, and that governance then holds every admin power |
 | `compute_budget.rs` | 5 | §6.3 — compute measured across a 64× sweep in staker and voter count, plus a budget ceiling on every hot-path instruction |
 | `fuzz_invariants.rs` | 7 | §1.1–1.4, §3.1–3.2, §4.1, §4.3, §4.5–4.6 asserted after every operation of 22 random sequences, plus the tests that keep the campaign honest |
 | `realm_authority.rs` | 6 | §4.14, §4.15 — F-11: the realm's parameters reachable by proposal, the human authority revocable, and the attack that was possible before both |

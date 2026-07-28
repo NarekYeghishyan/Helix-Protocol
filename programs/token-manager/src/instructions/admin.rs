@@ -4,7 +4,9 @@ use anchor_lang::prelude::*;
 
 use crate::constants::CONFIG_SEED;
 use crate::errors::TokenManagerError;
-use crate::events::{AdminTransferAccepted, AdminTransferProposed, PauseToggled};
+use crate::events::{
+    AdminTransferAccepted, AdminTransferCancelled, AdminTransferProposed, PauseToggled,
+};
 use crate::state::TokenConfig;
 
 #[derive(Accounts)]
@@ -41,11 +43,19 @@ pub fn propose_admin(ctx: Context<AdminOnly>, new_admin: Pubkey) -> Result<()> {
 /// Cancels a pending handover. Cheap insurance against a proposal made in error.
 pub fn cancel_admin_transfer(ctx: Context<AdminOnly>) -> Result<()> {
     let config = &mut ctx.accounts.config;
-    require!(
-        config.pending_admin.is_some(),
-        TokenManagerError::NoPendingAdmin
-    );
+    let cancelled_admin = config
+        .pending_admin
+        .ok_or(TokenManagerError::NoPendingAdmin)?;
+
     config.pending_admin = None;
+
+    emit!(AdminTransferCancelled {
+        config: config.key(),
+        admin: config.admin,
+        cancelled_admin,
+        timestamp: Clock::get()?.unix_timestamp,
+    });
+
     Ok(())
 }
 

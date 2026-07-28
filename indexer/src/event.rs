@@ -104,6 +104,7 @@ helix_events! {
         TokensMinted:          helix_token_manager::events::TokensMinted,
         TokensBurned:          helix_token_manager::events::TokensBurned,
         AdminTransferProposed: helix_token_manager::events::AdminTransferProposed,
+        AdminTransferCancelled: helix_token_manager::events::AdminTransferCancelled,
         AdminTransferAccepted: helix_token_manager::events::AdminTransferAccepted,
         PauseToggled:          helix_token_manager::events::PauseToggled,
     }

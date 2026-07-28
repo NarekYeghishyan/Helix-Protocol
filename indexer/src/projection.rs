@@ -400,6 +400,7 @@ impl Analytics {
             | E::TokensMinted(_)
             | E::TokensBurned(_)
             | E::AdminTransferProposed(_)
+            | E::AdminTransferCancelled(_)
             | E::AdminTransferAccepted(_)
             | E::PauseToggled(_) => {}
         }

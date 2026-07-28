@@ -84,6 +84,24 @@ pub struct AdminTransferProposed {
     pub timestamp: i64,
 }
 
+/// A pending handover withdrawn before it was accepted.
+///
+/// Added because it was the one state transition in the protocol that changed an
+/// account and emitted nothing. An observer would have seen
+/// [`AdminTransferProposed`] and then silence, leaving any monitor tracking
+/// "is a handover pending?" stuck on a false positive forever — during the
+/// multi-step admin ceremony in `RUNBOOK.md`, which is precisely when someone is
+/// watching.
+#[event]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AdminTransferCancelled {
+    pub config: Pubkey,
+    pub admin: Pubkey,
+    /// The successor that will now not be taking over.
+    pub cancelled_admin: Pubkey,
+    pub timestamp: i64,
+}
+
 #[event]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AdminTransferAccepted {

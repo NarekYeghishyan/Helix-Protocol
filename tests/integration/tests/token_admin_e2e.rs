@@ -548,3 +548,70 @@ fn nobody_but_governance_can_drive_the_token_admin() {
         .expect_err("an arbitrary signer must not act as admin");
     assert!(err.contains("NotAdmin"), "unexpected failure: {err}");
 }
+
+/// Cancelling a pending handover is a state change, so it must be visible in the
+/// log like every other one.
+///
+/// It was the single instruction in all four programs that mutated an account and
+/// emitted nothing — found by auditing every handler for `emit!`, not by a test
+/// failing. The consequence is narrow and nasty: an observer sees
+/// `AdminTransferProposed` and then silence, so anything tracking "is a handover
+/// pending?" stays stuck on a false positive. That window is the admin ceremony
+/// in `RUNBOOK.md`, which is exactly when someone is watching.
+#[test]
+fn cancelling_a_pending_admin_transfer_is_visible_in_the_log() {
+    let mut f = setup();
+    let admin = f.admin.insecure_clone();
+    let successor = Keypair::new();
+
+    let propose = TestEnv::ix(
+        helix_token_manager::ID,
+        helix_token_manager::accounts::AdminOnly {
+            config: f.config,
+            admin: f.admin.pubkey(),
+        },
+        helix_token_manager::instruction::ProposeAdmin {
+            new_admin: successor.pubkey(),
+        },
+    );
+    f.env.send(&[propose], &[&admin]);
+
+    let cancel = TestEnv::ix(
+        helix_token_manager::ID,
+        helix_token_manager::accounts::AdminOnly {
+            config: f.config,
+            admin: f.admin.pubkey(),
+        },
+        helix_token_manager::instruction::CancelAdminTransfer {},
+    );
+    let meta = f.env.send_metered(&[cancel], &[&admin]);
+
+    let parsed = helix_indexer::parse(&meta.logs);
+    assert!(
+        parsed.is_complete(),
+        "the cancellation log did not parse: {:?}",
+        parsed.anomalies
+    );
+
+    let cancelled = parsed
+        .events
+        .iter()
+        .find_map(|e| match &e.event {
+            helix_indexer::HelixEvent::AdminTransferCancelled(c) => Some(c),
+            _ => None,
+        })
+        .expect("cancelling a handover emitted no event");
+
+    assert_eq!(cancelled.config, f.config);
+    assert_eq!(cancelled.admin, f.admin.pubkey());
+    assert_eq!(
+        cancelled.cancelled_admin,
+        successor.pubkey(),
+        "the event does not say who was cancelled, so a consumer cannot tell \
+         which pending handover ended"
+    );
+
+    let config: TokenConfig = f.env.anchor_account(&f.config);
+    assert_eq!(config.pending_admin, None);
+    assert_eq!(config.admin, f.admin.pubkey(), "the admin itself changed");
+}
