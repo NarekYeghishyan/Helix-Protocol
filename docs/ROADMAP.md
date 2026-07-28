@@ -23,7 +23,7 @@ says how much to trust each one.
 | 3 | Devnet deployment + verifiable builds | ◐ Bootstrap measured, F-9 fixed; the deploy itself is blocked on devnet funding — **highest priority** |
 | 4 | Indexer + analytics API | ◐ Decode and projection built and reconciled against the chain; ingestion and storage not started |
 | 5 | Dashboard + wallet integration | ⬜ Not started |
-| 6 | Fuzzing + external audit prep | ◐ Compute benchmarked (§6.3 measured); fuzzing not started |
+| 6 | Fuzzing + external audit prep | ◐ Compute benchmarked, stateful fuzzing running and it found F-10; audit not yet scoped |
 | 7 | Governance migration (burn the admin keys) | ⬜ Not started |
 
 ---
@@ -181,8 +181,8 @@ so the UI can say "position is still locked" instead of "custom program error: 0
 | Milestone | Deliverable | Est. | Status |
 |---|---|---|---|
 | 6.0 | **Compute benchmarks** against staker and voter count, to measure invariant §6.3 rather than argue it | 1d | ✅ Done |
-| 6.1 | Trident stateful fuzzing over staking and governance | 2d | ⬜ |
-| 6.2 | Invariant harness: assert every [INVARIANTS.md](./INVARIANTS.md) property after each fuzz step | 1.5d | ⬜ |
+| 6.1 | Stateful fuzzing over staking and governance | 2d | ✅ Done — **not** with Trident, see below |
+| 6.2 | Invariant harness: assert every [INVARIANTS.md](./INVARIANTS.md) property after each fuzz step | 1.5d | ✅ Done — found [F-10](./SECURITY-ASSESSMENT.md#f-10--post-snapshot-weight-could-vote) |
 | 6.3 | Self-audit report; resolve findings | 1–2d | ⬜ |
 | 6.4 | Scope and brief an external audit | 0.5d | ⬜ |
 
@@ -194,8 +194,33 @@ costs bit-identical compute. Most of the work was not the measurement but identi
 made an earlier draft of it unreproducible — PDA bump derivation, at 1,500 CU an attempt,
 varying with a randomly generated mint.
 
+**6.1 does not use Trident, and the reason is checkable.** Its newest release
+(0.13.0-rc.4) pins `solana-sdk ^2.3`; `anchor-lang` 1.1.2 resolves the Solana crates at
+3.x. Adding it would put two major versions of the SDK in one dependency graph — the same
+breakage that already forces `litesvm` to `=0.13.1`. The equivalent is built on LiteSVM
+instead, in [`fuzz.rs`](../tests/integration/src/fuzz.rs): a seeded generator, an oracle
+that reads every aggregate invariant out of the accounts after **every** operation, and a
+delta-debugging shrinker. Re-check the pin when Trident moves; it is a one-line change.
+
+**6.2 paid for itself.** §4.3 (`for + against + abstain <= total_weight_snapshot`) had sat
+at ◐ — reasoned about, never asserted over real accounts. The oracle asserted it after
+every step and found weight staked *after* activation voting anyway, inflating the quorum
+numerator against a fixed denominator. That is
+[F-10](./SECURITY-ASSESSMENT.md#f-10--post-snapshot-weight-could-vote), High severity,
+fixed. Every scripted governance test had staked its voters before activating, because that
+is the order a person writes; the generator had no such habit.
+
+Most of the work was not writing the fuzzer but making it reach anything. The governance
+lifecycle is six ordered, clock-gated steps, and a uniform generator spent its whole budget
+bouncing off `InvalidProposalState`: the first measured campaign activated 18 proposals,
+cast 7 votes and executed none. Getting to `execute` took a state-aware generator, an
+eligibility-aware voter selection, and a sequence length chosen by measuring the funnel
+rather than by taste — all recorded in
+[TESTING.md](./TESTING.md#what-it-took-to-make-the-fuzzer-reach-anything).
+
 Low confidence on the rest: fuzzing finds what it finds. The 1–2 days for 6.3 assumes the
-findings are shallow, which is exactly the assumption fuzzing exists to test.
+findings are shallow, which is exactly the assumption fuzzing exists to test — and the
+first campaign already returned a High.
 
 ## Phase 7 — Governance migration
 

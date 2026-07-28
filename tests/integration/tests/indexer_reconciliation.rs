@@ -333,6 +333,10 @@ fn the_indexed_proposal_matches_the_chain_through_execution() {
         view.total_weight_snapshot, chain.total_weight_snapshot,
         "the quorum denominator disagrees"
     );
+    assert_eq!(
+        view.position_count_snapshot, chain.position_count_snapshot,
+        "the electorate the denominator covers disagrees"
+    );
     assert!(view.voters.contains(&voter.pubkey()));
 
     // The nested-CPI case: governance at depth 1 emits ProposalExecuted, the

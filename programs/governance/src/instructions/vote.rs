@@ -103,6 +103,24 @@ pub fn cast_vote(ctx: Context<CastVote>, choice: VoteChoice) -> Result<()> {
     );
     // --------------------------------------------------------------------
 
+    // ---- the electorate gate ---------------------------------------------
+    //
+    // The gate above proves commitment forward in time. This one proves
+    // membership backward in time: the position has to have existed when the
+    // quorum denominator was measured.
+    //
+    // Both are needed, and neither implies the other. A position opened after
+    // activation and locked for 180 days satisfies the flash-loan gate
+    // comfortably, and its weight is absent from `total_weight_snapshot` — so
+    // counting it adds to the numerator of the quorum test while the
+    // denominator stays where it was. Enough of it clears a threshold measured
+    // against an electorate that no longer exists.
+    require!(
+        ctx.accounts.position.position_id < ctx.accounts.proposal.position_count_snapshot,
+        GovernanceError::PositionNotInSnapshot
+    );
+    // --------------------------------------------------------------------
+
     let weight = ctx.accounts.position.weighted_amount;
     // A zero-weight position would create a vote record that consumes rent and
     // says nothing. Refusing keeps the record set meaningful.

@@ -256,6 +256,14 @@ impl System {
             .position_count
     }
 
+    /// The `proposal_id` the next `create_proposal` must carry — the realm's
+    /// counter, for the same reason [`Self::next_position_id`] is the pool's.
+    pub fn next_proposal_id(&self) -> u64 {
+        self.env
+            .anchor_account::<helix_governance::state::Realm>(&self.realm)
+            .proposal_count
+    }
+
     /// Gives `owner` lamports for rent and `amount` tokens to stake, returning
     /// their token account and the `position_id` their next stake must carry.
     ///
@@ -346,6 +354,27 @@ impl System {
         )
     }
 
+    /// Re-tunes the realm. The authority is the payer, so this needs no proposal.
+    ///
+    /// [`default_realm_params`] pins voting period and timelock at their
+    /// permitted minimums so the end-to-end tests can warp seconds instead of
+    /// days. That is the right default for a test that drives one proposal by
+    /// hand and the wrong one for the fuzzer, whose clock also has to expire
+    /// 30-to-180-day stake locks — see `fuzz::FUZZ_REALM_PARAMS`.
+    pub fn set_realm_params(&mut self, params: RealmParams) {
+        self.env.send(
+            &[TestEnv::ix(
+                helix_governance::ID,
+                helix_governance::accounts::UpdateRealmParams {
+                    realm: self.realm,
+                    authority: self.env.payer_pubkey(),
+                },
+                helix_governance::instruction::UpdateRealmParams { params },
+            )],
+            &[],
+        );
+    }
+
     pub fn activate(&mut self, proposal: Pubkey) {
         let ix = self.activate_ix(proposal);
         self.env.send(&[ix], &[]);
@@ -431,8 +460,8 @@ impl System {
         self.env.send(&[ix], &[]);
     }
 
-    pub fn cancel(&mut self, proposal: Pubkey) {
-        let ix = TestEnv::ix(
+    pub fn cancel_ix(&self, proposal: Pubkey) -> solana_instruction::Instruction {
+        TestEnv::ix(
             helix_governance::ID,
             helix_governance::accounts::CancelProposal {
                 realm: self.realm,
@@ -440,9 +469,27 @@ impl System {
                 proposal,
             },
             helix_governance::instruction::CancelProposal {},
-        );
+        )
+    }
+
+    pub fn cancel(&mut self, proposal: Pubkey) {
+        let ix = self.cancel_ix(proposal);
         let guardian = self.guardian.insecure_clone();
         self.env.send(&[ix], &[&guardian]);
+    }
+
+    /// Records the outcome of a passed signalling proposal. Moves nothing, which
+    /// is what makes it the right action for the fuzzer: it drives the lifecycle
+    /// through to `Executed` without dragging the treasury's accounts along.
+    pub fn execute_signal_ix(&self, proposal: Pubkey) -> solana_instruction::Instruction {
+        TestEnv::ix(
+            helix_governance::ID,
+            helix_governance::accounts::ExecuteSignal {
+                realm: self.realm,
+                proposal,
+            },
+            helix_governance::instruction::ExecuteSignal {},
+        )
     }
 
     /// The instruction that makes a treasury transfer happen. Returned rather
@@ -569,18 +616,20 @@ impl System {
         self.env.send(&[ix], &[]);
     }
 
+    pub fn set_paused_ix(&self, paused: bool) -> solana_instruction::Instruction {
+        TestEnv::ix(
+            helix_staking::ID,
+            helix_staking::accounts::PoolAuthorityOnly {
+                pool: self.pool,
+                authority: self.env.payer_pubkey(),
+            },
+            helix_staking::instruction::SetPaused { paused },
+        )
+    }
+
     pub fn set_paused(&mut self, paused: bool) {
-        self.env.send(
-            &[TestEnv::ix(
-                helix_staking::ID,
-                helix_staking::accounts::PoolAuthorityOnly {
-                    pool: self.pool,
-                    authority: self.env.payer_pubkey(),
-                },
-                helix_staking::instruction::SetPaused { paused },
-            )],
-            &[],
-        );
+        let ix = self.set_paused_ix(paused);
+        self.env.send(&[ix], &[]);
     }
 
     pub fn claim_ix(&self, position: Pubkey) -> solana_instruction::Instruction {

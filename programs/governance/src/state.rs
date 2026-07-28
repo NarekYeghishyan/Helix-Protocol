@@ -207,6 +207,21 @@ pub struct Proposal {
     /// after seeing how the vote is going.
     pub total_weight_snapshot: u64,
 
+    /// `pool.position_count` at activation — which positions the snapshot above
+    /// was measured over.
+    ///
+    /// Position ids come from a pool-wide monotonic counter, so
+    /// `position_id < position_count_snapshot` is exactly "this position existed
+    /// when the denominator was taken". Storing the count rather than comparing
+    /// `created_at` to `voting_starts_at` makes that exact rather than
+    /// approximate: timestamps have one-second granularity, and a stake landing
+    /// in the same second as activation would slip through a timestamp test.
+    ///
+    /// Without this, weight staked *after* activation adds to the numerator of
+    /// the quorum test while the denominator stays fixed — see
+    /// `a_position_opened_after_the_snapshot_cannot_vote`.
+    pub position_count_snapshot: u64,
+
     pub bump: u8,
 }
 
@@ -338,6 +353,10 @@ mod tests {
             against_votes: 0,
             abstain_votes: 0,
             total_weight_snapshot: snapshot,
+            // Large enough that no position id in these tests falls outside the
+            // electorate. The gate itself is a runtime property — see
+            // `a_position_opened_after_the_snapshot_cannot_vote`.
+            position_count_snapshot: u64::MAX,
             bump: 255,
         }
     }

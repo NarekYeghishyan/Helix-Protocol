@@ -44,7 +44,7 @@
 use anchor_lang::prelude::Pubkey;
 use helix_governance::state::{ProposalAction, VoteChoice};
 use helix_integration_tests::bootstrap::HOUR;
-use helix_integration_tests::{pda, System};
+use helix_integration_tests::{pda, Staker, System};
 use helix_staking::state::LockTier;
 use solana_keypair::Keypair;
 use solana_signer::Signer as _;
@@ -327,17 +327,29 @@ fn governance_compute_does_not_grow_with_voter_count() {
     sys.fund_voter(STAKE_AMOUNT);
     let proposer_position = sys.stake(0, STAKE_AMOUNT, LockTier::Bronze);
     let proposal = sys.create_proposal(0, ProposalAction::Signal, proposer_position);
+
+    // The whole electorate is staked *before* activation, because a position
+    // numbered at or above the snapshot cannot vote at all — see
+    // `a_position_opened_after_the_snapshot_cannot_vote`. Staking as we went
+    // would measure a rejection rather than a vote.
+    //
+    // The proposal address is known from the realm and its id, so the vote
+    // records can still be ground onto the canonical bump before it exists.
+    let electorate: Vec<Staker> = (0..*CHECKPOINTS.last().unwrap())
+        .map(|_| stake_a_voter(&mut sys, proposal))
+        .collect();
+
     sys.activate(proposal);
 
     let mut measured = Vec::new();
-    let mut votes_cast = 0u64;
+    let mut votes_cast = 0usize;
 
     for k in CHECKPOINTS {
-        while votes_cast < k - 1 {
-            cast_one_vote(&mut sys, proposal);
+        while (votes_cast as u64) < k - 1 {
+            cast_vote_of(&mut sys, proposal, &electorate[votes_cast]);
             votes_cast += 1;
         }
-        measured.push(cast_one_vote(&mut sys, proposal));
+        measured.push(cast_vote_of(&mut sys, proposal, &electorate[votes_cast]));
         votes_cast += 1;
     }
 
@@ -353,12 +365,11 @@ fn governance_compute_does_not_grow_with_voter_count() {
     assert_no_growth("cast_vote", &CHECKPOINTS, &measured, COMPUTE_NOISE_FLOOR_CU);
 }
 
-/// Adds a fresh voter, stakes, and votes — returning what the vote cost.
+/// Stakes one voter, ground so its *vote record* lands on the canonical bump.
 ///
-/// The key is ground so the *vote record* lands on the canonical bump.
 /// `vote_record` is an `init` account seeded on the position, so its derivation
 /// cost varies per voter for reasons unrelated to how many votes precede it.
-fn cast_one_vote(sys: &mut System, proposal: Pubkey) -> u64 {
+fn stake_a_voter(sys: &mut System, proposal: Pubkey) -> Staker {
     let pool = sys.pool;
     let position_id = sys.next_position_id();
     let owner = grind(|pk| {
@@ -368,8 +379,11 @@ fn cast_one_vote(sys: &mut System, proposal: Pubkey) -> u64 {
 
     // Bronze locks for 30 days, well past the one-hour voting window, so the
     // flash-loan gate lets the position vote.
-    let staker = sys.add_staker(owner, STAKE_AMOUNT, LockTier::Bronze);
+    sys.add_staker(owner, STAKE_AMOUNT, LockTier::Bronze)
+}
 
+/// Casts `staker`'s vote, returning what it cost.
+fn cast_vote_of(sys: &mut System, proposal: Pubkey, staker: &Staker) -> u64 {
     let ix = sys.vote_ix_for(
         &staker.owner.pubkey(),
         proposal,

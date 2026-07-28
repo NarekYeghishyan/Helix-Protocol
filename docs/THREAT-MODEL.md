@@ -50,6 +50,24 @@ amount; withdraw the full credit and drain the difference from other stakers.*
 because it only appears on mints with the extension enabled — the test suite runs the
 whole staking flow twice, once on a plain mint and once on a fee-bearing mint.
 
+### A2b — Post-snapshot vote stuffing
+
+*Wait for a proposal to open, then stake heavily and vote, clearing a quorum measured
+before your capital existed.*
+
+**Defence.** `activate_proposal` records `position_count_snapshot` alongside the weight
+snapshot, and `cast_vote` requires `position.position_id < position_count_snapshot`.
+Position ids come from a pool-wide monotonic counter, so that comparison is exactly "this
+position existed when the denominator was measured".
+
+Distinct from A1 and not implied by it. A1 is about capital that can leave before the vote
+closes; this attack uses capital locked for 180 days, which satisfies A1's gate completely.
+A1 is commitment forward in time, this is membership backward in time, and a system can
+have one without the other — as this one did until a stateful fuzzer generated the
+operations in an order no hand-written test had.
+[F-10](./SECURITY-ASSESSMENT.md#f-10--post-snapshot-weight-could-vote), fixed, pinned by
+`a_position_opened_after_the_snapshot_cannot_vote` and by invariants §4.3 and §4.13.
+
 ### A4 — Compute exhaustion / unbounded iteration
 
 *Grow the staker set until reward distribution exceeds the compute budget and the pool

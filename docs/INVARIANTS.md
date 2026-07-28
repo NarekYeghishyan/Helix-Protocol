@@ -15,7 +15,7 @@ An invariant with no test is a design intention, not a guarantee.
 
 Notation: `Σ` sums over all accounts of that type belonging to the pool/realm.
 
-**Current totals across 54 invariants: 49 ✅ · 2 ◐ · 3 ⬜.**
+**Current totals across 55 invariants: 52 ✅ · 0 ◐ · 3 ⬜.**
 
 Every user-facing flow is now exercised at runtime against the real BPF programs: staking
 deposit and withdrawal, reward accrual and claim, the full governance lifecycle, treasury
@@ -46,6 +46,17 @@ The same defect appeared again in the token-manager
 ([F-9](./SECURITY-ASSESSMENT.md#f-9--token-manager-admin-cannot-be-handed-to-governance)),
 and fixing it nearly produced a third instance — granting the realm the admin role without
 the admin's *powers*. §5.10 exists to pin that down.
+
+**And §4.3 was a real bug, not a bookkeeping gap.** It sat at ◐ — reasoned about, never
+asserted over real accounts — until the stateful fuzzer checked it after every operation
+and found weight staked *after* a proposal's snapshot voting anyway, inflating the quorum
+numerator against a fixed denominator
+([F-10](./SECURITY-ASSESSMENT.md#f-10--post-snapshot-weight-could-vote)). Every scripted
+governance test had staked its voters before activating, because that is the order a person
+writes. §4.13 exists to keep it fixed.
+
+That is the argument for the ◐ column being honest rather than optimistic: two of the three
+rows that carried it turned out to be hiding something.
 
 What remains ⬜ is the deployment-time invariant §5.8 and two aggregate properties that
 need many accounts to be meaningful — Phase 3 and Phase 6 respectively.
@@ -119,7 +130,7 @@ on-chain fixed-point result, asserting the on-chain value is never larger.
 |---|-----------|------|--------|
 | 4.1 | One `VoteRecord` per `(proposal, position)` — double voting impossible | `a_position_cannot_vote_twice` | ✅ |
 | 4.2 | Vote weight counted only if `position.lock_end >= proposal.voting_ends_at` | `a_flash_staked_position_cannot_vote` (runtime), `lock_gate_rejects_freshly_opened_positions` | ✅ |
-| 4.3 | `for + against + abstain <= total_weight_snapshot` | `the_full_lifecycle_visits_every_state` | ◐ |
+| 4.3 | `for + against + abstain <= total_weight_snapshot` | `random_sequences_preserve_every_invariant` (fuzz oracle, every step), `a_position_opened_after_the_snapshot_cannot_vote` | ✅ |
 | 4.4 | No proposal executes before `eta` | `execution_before_the_timelock_elapses_is_refused` | ✅ |
 | 4.5 | No proposal executes twice | `a_proposal_cannot_execute_twice` | ✅ |
 | 4.6 | State transitions follow the documented lifecycle; no state is skipped | `the_full_lifecycle_visits_every_state` (runtime), `require_state_gates_transitions` | ✅ |
@@ -128,11 +139,14 @@ on-chain fixed-point result, asserting the on-chain value is never larger.
 | 4.12 | An action variant cannot be executed through the wrong handler | `a_signal_proposal_cannot_be_executed_as_a_treasury_transfer` | ✅ |
 | 4.8 | Quorum and approval lose nothing to rounding | `quorum_is_not_lost_to_rounding`, `supermajority_threshold` | ✅ |
 | 4.9 | Abstentions count toward quorum but never toward approval | `abstentions_do_not_help_approval` | ✅ |
-| 4.10 | A queued proposal expires and cannot execute afterwards | `queued_proposals_expire` | ◐ |
+| 4.10 | A queued proposal expires and cannot execute afterwards | `queued_proposals_expire`, and `ProposalExpired` reached by the fuzz campaign | ✅ |
+| 4.13 | Only positions that existed at activation may vote | `a_position_opened_after_the_snapshot_cannot_vote` | ✅ |
 
-4.7 is marked ◐ because the *veto window* is tested but the "guardian has no other power"
-half is currently established by inspection — `realm.guardian` is read in exactly one
-instruction. A runtime test attempting every other instruction as guardian would make it ✅.
+4.7 has two halves and both are now tested: `the_guardian_veto_prevents_execution` covers
+the veto itself, and `the_guardian_cannot_do_anything_but_cancel` attempts the other
+governance instructions as guardian and requires each to be refused. The second half used
+to rest on inspection — `realm.guardian` is read in exactly one instruction — which is an
+argument about the code as written rather than a property of the deployed program.
 
 ## 5. Authority
 
@@ -202,7 +216,7 @@ a 31-CU residual it bounds but does not explain.
 
 ```bash
 anchor build 2>&1 | tee build.log && grep -i "stack offset" build.log  # must be empty
-cargo test --workspace          # 154 tests: unit + doc + runtime
+cargo test --workspace          # 162 tests: unit + doc + runtime
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 

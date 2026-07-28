@@ -100,6 +100,10 @@ pub fn create_proposal(
     proposal.against_votes = 0;
     proposal.abstain_votes = 0;
     proposal.total_weight_snapshot = 0;
+    // Zero until activation, which is also what makes it safe: `cast_vote`
+    // requires `position_id < position_count_snapshot`, so no position can vote
+    // on a draft even if the state check above were somehow bypassed.
+    proposal.position_count_snapshot = 0;
     proposal.bump = ctx.bumps.proposal;
 
     let realm = &mut ctx.accounts.realm;
@@ -167,17 +171,24 @@ pub fn activate_proposal(ctx: Context<ActivateProposal>) -> Result<()> {
     // With nothing staked there is no denominator, so no meaningful quorum.
     require!(snapshot > 0, GovernanceError::MissingSnapshot);
 
+    // The electorate the denominator was measured over. `cast_vote` refuses any
+    // position numbered at or above this, which is what keeps the numerator and
+    // the denominator describing the same set of stakers.
+    let position_count_snapshot = ctx.accounts.staking_pool.position_count;
+
     let proposal = &mut ctx.accounts.proposal;
     proposal.state = ProposalState::Voting;
     proposal.voting_starts_at = now;
     proposal.voting_ends_at = voting_ends_at;
     proposal.total_weight_snapshot = snapshot;
+    proposal.position_count_snapshot = position_count_snapshot;
 
     emit!(ProposalActivated {
         proposal: proposal.key(),
         voting_starts_at: now,
         voting_ends_at,
         total_weight_snapshot: snapshot,
+        position_count_snapshot,
         timestamp: now,
     });
 

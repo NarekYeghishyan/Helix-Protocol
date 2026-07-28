@@ -10,7 +10,7 @@ is bounded by the honesty of its coverage claims.
 ```bash
 anchor build                                                  # required first — the
                                                               # runtime tests load .so files
-cargo test --workspace                                        # 154 tests: unit + doc + runtime
+cargo test --workspace                                        # 162 tests: unit + doc + runtime
 cargo test -p helix-staking --lib                             # one program's unit tests
 cargo test -p helix-staking --lib -- --nocapture rounding     # one test, with output
 
@@ -30,7 +30,7 @@ status code. See [F-3](./SECURITY-ASSESSMENT.md#f-3--sbf-stack-frame-overflow).
 
 ## What is covered
 
-**88 unit tests** over pure functions and state machines, and **66 runtime tests** against
+**88 unit tests** over pure functions and state machines, and **74 runtime tests** against
 the real BPF programs.
 
 ### Unit tests
@@ -58,11 +58,12 @@ the real BPF programs.
 | `smoke.rs` | 2 | All four programs load and are executable; IDs are distinct |
 | `staking_transfer_fee.rs` | 4 | §1.1, §1.3, §2.1–§2.3 against a real 1% transfer-fee mint |
 | `staking_lifecycle.rs` | 12 | §1.2, §1.4, §6.1, §6.2, §6.4, §6.5 — funding, rate solvency, accrual, claim, partial and full unstake, pause semantics, cross-owner claim refused |
-| `governance_e2e.rs` | 14 | §4.1–4.7, §4.11–4.12, §5.1 — the authority chain plus one negative test per threat-model attack |
+| `governance_e2e.rs` | 15 | §4.1–4.7, §4.11–4.13, §5.1 — the authority chain plus one negative test per threat-model attack |
 | `vesting_e2e.rs` | 12 | §1.5, §1.6, §7.5, §7.7–7.9 — grant → cliff → claim → revoke, forward-only revocation, committed balance protection, executor migration |
 | `bootstrap_atomicity.rs` | 3 | F-1's mitigation: the bootstrap fits one transaction (748 B / 17 accounts, asserted against the 1232-byte limit), and re-initialisation fails afterwards |
 | `token_admin_e2e.rs` | 7 | §5.2, §5.4, §5.9, §5.10 — the token-manager admin handover in real deployment order, and that governance then holds every admin power |
 | `compute_budget.rs` | 5 | §6.3 — compute measured across a 64× sweep in staker and voter count, plus a budget ceiling on every hot-path instruction |
+| `fuzz_invariants.rs` | 7 | §1.1–1.4, §3.1–3.2, §4.1, §4.3, §4.5–4.6 asserted after every operation of 22 random sequences, plus the tests that keep the campaign honest |
 | `indexer_reconciliation.rs` | 7 | The [indexer's](../indexer) projection compared to on-chain accounts field by field, over the staking lifecycle, a fee-bearing mint, the governance lifecycle including nested CPI, replay, and partial history |
 
 ### Testing conventions worth copying
@@ -91,6 +92,76 @@ which is six times the effect being measured. See [Compute cost](#compute-cost).
 of the solvency guard were individually correct and individually tested, and the defect
 lived in their composition — a guard that could never approve any non-zero reward rate.
 `solvency_ok()` in the staking tests now mirrors the handler's actual comparison.
+
+## Stateful fuzzing
+
+[`fuzz.rs`](../tests/integration/src/fuzz.rs) generates random operation sequences, runs
+them against the real BPF programs, and reads every aggregate invariant back out of the
+accounts **after each operation**. Those are the invariants unit tests cannot reach:
+`Σ position.amount == vault.amount` needs real positions and a real vault.
+
+```bash
+cargo test -p helix-integration-tests --test fuzz_invariants
+```
+
+It found [F-10](./SECURITY-ASSESSMENT.md#f-10--post-snapshot-weight-could-vote), a High:
+weight staked *after* a proposal's snapshot could vote, inflating the quorum numerator
+against a fixed denominator. Every scripted governance test staked its voters before
+activating, because that is the order a person writes when describing how governance is
+supposed to work. The generator had no such habit.
+
+**Not Trident**, and the reason is checkable: its newest release pins `solana-sdk ^2.3`
+while `anchor-lang` 1.1.2 resolves the Solana crates at 3.x — two major versions of the SDK
+in one graph, the same breakage that pins `litesvm` to `=0.13.1`.
+
+Three properties make it worth its runtime, each with a test that fails if it stops holding:
+
+| Property | Kept by |
+|---|---|
+| Deterministic — a seed reproduces a run exactly, keys included | `a_run_is_reproducible_from_its_seed` |
+| The oracle would notice — corrupt an account and the right section objects | `the_oracle_notices_corrupted_state` |
+| A failure is actionable — delta debugging reduces to the minimal sequence | `the_shrinker_reduces_to_the_minimal_case` |
+| Not vacuous — every operation is both accepted and rejected somewhere | `the_fuzzer_is_not_vacuous` |
+
+The oracle also carries **negative** expectations. It tracks which positions have voted and
+which proposals have executed, so an operation that *succeeds* when it had to fail is a
+violation — §4.1 and §4.5 checked in the direction that matters.
+
+### What it took to make the fuzzer reach anything
+
+Writing the generator was the easy half. The governance lifecycle is six ordered steps
+against one proposal, each gated on state and most of them on the clock, so a uniform
+generator spends its whole budget bouncing off `InvalidProposalState`. Measured, per
+campaign:
+
+| | queue accepted | execute accepted |
+|---|---:|---:|
+| First working version, 60 ops | 0 | 0 |
+| 90 ops | 2 | 0 |
+| 120 ops | 3 | 1 |
+| 150 ops, with the fixes below | 10 | 3 |
+
+Every invariant passed at 60 operations, and the entire second half of the state machine —
+the timelock, expiry, double execution — was untested. **A green fuzz campaign that never
+reaches the interesting states is the most expensive way to prove nothing.**
+
+Three changes, each found by reading a coverage table rather than by guessing:
+
+- **State-aware target selection.** `Op::Queue` picks a proposal already in `Succeeded`,
+  falling back to any proposal when none is. The fallback is what keeps the guards under
+  test; `the_fuzzer_is_not_vacuous` fails if it stops firing.
+- **Eligibility-aware voter selection.** Proposals were finalising `Defeated` eleven times
+  for every one that survived, because quorum needs roughly a fifth of the pool and each
+  vote was cast by a position picked uniformly — usually one that had already voted, was
+  flexible-tier, or was staked after the snapshot.
+- **A sequence length chosen by measurement.** 150, from the table above. Past that the
+  curve flattens and the runtime does not.
+
+The clock needed the same treatment. Governance runs on hours-to-days and stake locks run
+on months, and no single random warp distribution serves both: narrow enough to sit inside
+a voting window and it never expires a 180-day lock, wide enough to expire one and it steps
+clean over every window it passes. Hence `WarpToDeadline` and `WarpToUnlock`, which read
+chain state and land *on* a boundary rather than near it.
 
 ## Compute cost
 
@@ -187,7 +258,6 @@ Read this section before trusting anything above.
 
 | Gap | Consequence | Fix |
 |---|---|---|
-| No fuzzing | Only hand-chosen inputs have been tried | Phase 6 |
 | Deployment-time front-running (§5.8) | F-1's *mitigation* is measured and tested; the window before bootstrap lands is not closeable in-program without a deployer gate | Phase 3 |
 | Multi-staker distribution at scale | Two or three positions are exercised, not hundreds | Phase 6 (fuzzing) |
 | Real-cluster behaviour | LiteSVM is faithful but not a validator; no test covers fees, congestion or reorgs | Phase 3 (devnet) |

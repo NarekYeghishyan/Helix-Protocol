@@ -69,6 +69,11 @@ pub struct ProposalStats {
     pub against_votes: u64,
     pub abstain_votes: u64,
     pub total_weight_snapshot: u64,
+    /// How many positions the snapshot above covers. Tracked because a consumer
+    /// checking whether a vote came from the electorate needs both halves, and
+    /// because the chain stores both — a projection that dropped it would
+    /// disagree with the account it claims to mirror.
+    pub position_count_snapshot: u64,
     pub voters: BTreeSet<Pubkey>,
     pub eta: Option<i64>,
 }
@@ -261,6 +266,7 @@ impl Analytics {
                         against_votes: 0,
                         abstain_votes: 0,
                         total_weight_snapshot: 0,
+                        position_count_snapshot: 0,
                         voters: BTreeSet::new(),
                         eta: None,
                     },
@@ -273,6 +279,7 @@ impl Analytics {
                 };
                 proposal.state = ProposalState::Voting;
                 proposal.total_weight_snapshot = e.total_weight_snapshot;
+                proposal.position_count_snapshot = e.position_count_snapshot;
             }
             E::VoteCast(e) => {
                 let Some(proposal) = self.proposals.get_mut(&e.proposal) else {

@@ -47,6 +47,9 @@ pub enum GovernanceError {
     #[msg("Position carries zero weight")]
     ZeroWeight,
 
+    #[msg("Position was opened after the proposal's weight snapshot was taken")]
+    PositionNotInSnapshot,
+
     #[msg("Proposer does not meet the minimum weight to create a proposal")]
     BelowProposalThreshold,
 

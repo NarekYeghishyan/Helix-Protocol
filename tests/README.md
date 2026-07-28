@@ -12,19 +12,21 @@ cargo test --workspace
 |---|---|
 | [`integration/tests/smoke.rs`](./integration/tests/smoke.rs) | All four programs load and are executable; program IDs are distinct |
 | [`integration/tests/staking_transfer_fee.rs`](./integration/tests/staking_transfer_fee.rs) | Invariants §1.1, §1.3, §2.1–§2.3 — Token-2022 transfer fees |
-| [`integration/tests/governance_e2e.rs`](./integration/tests/governance_e2e.rs) | §4.1–4.7, §4.11–4.12, §5.1 — the authority chain, plus a negative test per threat-model attack |
+| [`integration/tests/governance_e2e.rs`](./integration/tests/governance_e2e.rs) | §4.1–4.7, §4.11–4.13, §5.1 — the authority chain, plus a negative test per threat-model attack |
 | [`integration/tests/staking_lifecycle.rs`](./integration/tests/staking_lifecycle.rs) | §1.2, §1.4, §6.1–6.5 — accrual, claim, partial and full unstake, pause semantics |
 | [`integration/tests/vesting_e2e.rs`](./integration/tests/vesting_e2e.rs) | §1.5, §1.6, §7.5, §7.7–7.9 — grant → cliff → claim → revoke, and F-8's regression check |
 | [`integration/tests/token_admin_e2e.rs`](./integration/tests/token_admin_e2e.rs) | §5.2, §5.4, §5.9, §5.10 — the token-manager admin handover, and F-9's regression check |
 | [`integration/tests/bootstrap_atomicity.rs`](./integration/tests/bootstrap_atomicity.rs) | F-1's mitigation — the whole bootstrap fits one transaction, and cannot be re-run |
+| [`integration/tests/fuzz_invariants.rs`](./integration/tests/fuzz_invariants.rs) | Stateful fuzzing — the aggregate invariants asserted after every operation of a random sequence; found F-10 |
 | [`integration/tests/compute_budget.rs`](./integration/tests/compute_budget.rs) | §6.3 — compute measured across a 64× sweep in staker and voter count, plus a budget ceiling per instruction |
 | [`integration/src/lib.rs`](./integration/src/lib.rs) | Harness: mint creation with extensions, clock warping, PDA derivations |
 | [`integration/src/bootstrap.rs`](./integration/src/bootstrap.rs) | A fully wired system — pool, realm, treasury, authorities connected |
+| [`integration/src/fuzz.rs`](./integration/src/fuzz.rs) | The fuzz generator, invariant oracle and shrinker |
 
 ## Why the transfer-fee tests matter most
 
 Staking credits the **observed vault balance delta**, never the `amount` argument. On a
-plain SPL mint those two numbers are identical — so the entire 65-test unit suite passes
+plain SPL mint those two numbers are identical — so the entire 88-test unit suite passes
 whether the code does the right thing or the wrong thing.
 
 That was confirmed by mutation testing. Reverting the fix so deposits credit `amount`:
@@ -99,5 +101,5 @@ docs in [`compute_budget.rs`](./integration/tests/compute_budget.rs).
 
 ## Still missing
 
-Fuzzing (Phase 6), and anything that needs a real validator rather than LiteSVM — fees,
-congestion, reorgs (Phase 3). See [ROADMAP.md](../docs/ROADMAP.md).
+Anything that needs a real validator rather than LiteSVM — fees, congestion, reorgs
+(Phase 3). See [ROADMAP.md](../docs/ROADMAP.md).

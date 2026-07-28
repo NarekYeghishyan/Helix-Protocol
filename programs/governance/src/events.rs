@@ -42,6 +42,10 @@ pub struct ProposalActivated {
     pub voting_ends_at: i64,
     /// The quorum denominator, fixed at this moment.
     pub total_weight_snapshot: u64,
+    /// How many positions that denominator covers. Carried so a consumer can
+    /// tell whether a later vote belonged to the electorate without reading the
+    /// proposal account back.
+    pub position_count_snapshot: u64,
     pub timestamp: i64,
 }
 

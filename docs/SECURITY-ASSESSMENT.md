@@ -112,6 +112,7 @@ Severity = impact × likelihood, CVSS-style but judged rather than computed.
 | F-7 | `Position` accounts are never closed | **Informational** | Open |
 | F-8 | Vesting, spend-cap and executor-migration instructions are unreachable | **Medium** | **Fixed** — found by attempting to test them |
 | F-9 | Token-manager admin cannot be handed to governance | **Low** | **Fixed** — same class as F-8 |
+| F-10 | Weight staked after activation could vote, inflating the quorum numerator against a fixed denominator | **High** | **Fixed** — found by stateful fuzzing |
 
 ### F-1 — Initialisers are front-runnable
 
@@ -363,6 +364,50 @@ test suite asks:
 1. For every privileged instruction, *which concrete transaction produces its signer?*
 2. When an authority is transferred, does the recipient also gain every power that
    authority carries?
+
+### F-10 — Post-snapshot weight could vote
+
+**Severity:** High · **Status:** fixed
+
+`activate_proposal` fixes `total_weight_snapshot` — the quorum denominator — at the moment
+of activation. `cast_vote` then admitted any position that satisfied the lock gate,
+including positions **created after that snapshot was taken**.
+
+Weight staked after activation therefore added to the numerator of the quorum test while
+the denominator stayed where it was:
+
+```text
+quorum:   (for + against + abstain) × 10_000  >=  total_weight_snapshot × quorum_bps
+approval:  for × 10_000                       >=  (for + against) × approval_bps
+```
+
+Buy enough stake after a proposal opens and both thresholds clear against an electorate
+that no longer exists. The visible symptom is `for + against + abstain >
+total_weight_snapshot` — invariant §4.3, which had been reasoned about but never asserted
+over real accounts.
+
+**This is not the flash-loan case.** §4.2 turns away capital that can be withdrawn before
+the vote closes; the attacking position here is locked for 180 days and satisfies that gate
+comfortably. The two properties are independent: §4.2 is commitment forward in time, F-10
+is membership backward in time, and passing one says nothing about the other. That is why a
+suite containing `a_flash_staked_position_cannot_vote` did not catch it.
+
+**Fix.** `Proposal` gained `position_count_snapshot`, set from `pool.position_count` at
+activation, and `cast_vote` requires `position.position_id < position_count_snapshot`.
+Position ids come from a pool-wide monotonic counter, so that comparison is exactly "this
+position existed when the denominator was measured". Comparing `created_at` against
+`voting_starts_at` would have been the obvious alternative and is weaker: timestamps have
+one-second granularity, so a stake landing in the same second as activation slips through.
+
+**Found by** [`fuzz_invariants.rs`](../tests/integration/tests/fuzz_invariants.rs), seed 10,
+shrunk to two stakes and a vote. Pinned by
+`a_position_opened_after_the_snapshot_cannot_vote`.
+
+The general lesson is about what fuzzing is *for*. Every scripted governance test staked
+its voters before activating, because that is the order a person writes when describing how
+governance is supposed to work. The fuzzer had no such notion, generated the operations in
+the other order, and the oracle — checking §4.3 after every single step rather than at the
+end of a scenario — caught the arithmetic going wrong the moment it did.
 
 ### F-7 — Position accounts never closed
 

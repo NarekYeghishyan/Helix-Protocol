@@ -303,6 +303,65 @@ fn a_flash_staked_position_cannot_vote() {
 }
 
 #[test]
+fn a_position_opened_after_the_snapshot_cannot_vote() {
+    // INVARIANTS.md §4.3 / SECURITY-ASSESSMENT F-10. Found by the stateful
+    // fuzzer, seed 10, and shrunk to two stakes and a vote.
+    //
+    // This is the case `a_flash_staked_position_cannot_vote` above does not
+    // cover. §4.2 turns away *unlocked* capital; this position is locked for 180
+    // days, so §4.2 waves it through. What it is not is part of the electorate
+    // the quorum denominator was measured over — `total_weight_snapshot` was
+    // taken at activation, before this position existed.
+    //
+    // The visible symptom is `for + against + abstain > total_weight_snapshot`.
+    // The damage is quorum. Quorum is `votes × 10_000 >= snapshot × quorum_bps`,
+    // so weight staked after the snapshot adds to the numerator and never
+    // reaches the denominator: buy enough of it and a proposal clears a
+    // threshold measured against an electorate that no longer exists.
+    let mut sys = System::bootstrap(None, 0);
+
+    let incumbent = sys.stake(0, STAKE, LockTier::Gold);
+    let proposal = sys.create_proposal(0, ProposalAction::Signal, incumbent);
+    sys.activate(proposal);
+
+    let snapshot = sys
+        .env
+        .anchor_account::<Proposal>(&proposal)
+        .total_weight_snapshot;
+
+    // Five times the electorate, locked for 180 days — well past voting_ends_at,
+    // so the flash-loan gate is satisfied.
+    let latecomer = sys.stake(1, STAKE * 5, LockTier::Gold);
+
+    let ix = sys.vote_ix(proposal, latecomer, VoteChoice::For);
+    let voter = sys.voter.insecure_clone();
+    let err = sys
+        .env
+        .try_send(&[ix], &[&voter])
+        .expect_err("a position created after the snapshot must not vote");
+    assert!(
+        err.contains("PositionNotInSnapshot"),
+        "unexpected failure: {err}"
+    );
+
+    let p: Proposal = sys.env.anchor_account(&proposal);
+    assert_eq!(p.for_votes, 0, "post-snapshot weight was counted");
+    assert!(
+        p.total_votes().unwrap() <= snapshot,
+        "§4.3: {} counted against a {snapshot} snapshot",
+        p.total_votes().unwrap()
+    );
+
+    // And the incumbent — which *was* in the snapshot — still votes.
+    sys.vote(proposal, incumbent, VoteChoice::For);
+    let p: Proposal = sys.env.anchor_account(&proposal);
+    assert_eq!(
+        p.for_votes, snapshot,
+        "the fix turned away the electorate along with the latecomer"
+    );
+}
+
+#[test]
 fn the_guardian_veto_prevents_execution() {
     // INVARIANTS.md §4.7 — the guardian's one power.
     let mut sys = System::bootstrap(None, TREASURY_FUNDING);

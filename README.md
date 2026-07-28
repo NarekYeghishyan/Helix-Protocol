@@ -8,7 +8,7 @@ Rust with the Anchor framework.
 [![Solana](https://img.shields.io/badge/solana-3.x-purple)](https://solana.com)
 [![License](https://img.shields.io/badge/license-Apache--2.0-green)](./LICENSE)
 
-> **Status: unaudited. Not deployed.** All four programs build to BPF and pass 154 tests
+> **Status: unaudited. Not deployed.** All four programs build to BPF and pass 162 tests
 > locally, including runtime tests that execute the full governance → treasury authority
 > chain and a real Token-2022 mint with transfer fees. The analytics stack and a devnet
 > deployment are scoped in [ROADMAP.md](./docs/ROADMAP.md). Nothing here has held real
@@ -61,12 +61,20 @@ make. → [`staking/src/state.rs`](./programs/staking/src/state.rs),
 [`compute_budget.rs`](./tests/integration/tests/compute_budget.rs),
 [compute table](./docs/TESTING.md#compute-cost).
 
-**Flash-loan governance attacks fail by construction.** A position may vote only if
-`lock_end >= proposal.voting_ends_at` — you can only vote with stake you are unable to
-withdraw before the vote closes. Borrowed capital has `lock_end == now` and carries zero
-weight. Stronger than a snapshot, which can be gamed by borrowing *before* the snapshot
-block, and it costs one comparison rather than a history of balance checkpoints. →
-[`governance/src/instructions/vote.rs`](./programs/governance/src/instructions/vote.rs),
+**Voting takes two gates, and stateful fuzzing found the second one missing.** A position
+may vote only if `lock_end >= proposal.voting_ends_at` — you can only vote with stake you
+are unable to withdraw before the vote closes, so borrowed capital carries zero weight.
+Stronger than a block snapshot, which can be gamed by borrowing *before* the snapshot, and
+it costs one comparison.
+
+That gate proves commitment forward in time. It says nothing about membership backward in
+time, and the fuzzer found weight staked *after* a proposal opened voting anyway —
+inflating the quorum numerator against a denominator fixed at activation. Locked for 180
+days, so the flash-loan gate waved it through. Every hand-written governance test had
+staked its voters before activating, because that is the order a person writes.
+[F-10](./docs/SECURITY-ASSESSMENT.md#f-10--post-snapshot-weight-could-vote), High, fixed. →
+[`vote.rs`](./programs/governance/src/instructions/vote.rs),
+[`fuzz.rs`](./tests/integration/src/fuzz.rs),
 [threat model](./docs/THREAT-MODEL.md#a1--flash-loan-governance-capture).
 
 **Token-2022 transfer fees are accounted for — and proven so.** When a mint carries the
@@ -135,7 +143,7 @@ yet, so CI does not pretend to lint any.
 ```bash
 anchor build 2>&1 | tee build.log
 grep -i "stack offset" build.log   # must be empty — anchor build exits 0 even when it isn't
-cargo test --workspace             # 154 tests: unit + doc + runtime
+cargo test --workspace             # 162 tests: unit + doc + runtime
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all -- --check
 ```
@@ -144,14 +152,14 @@ cargo fmt --all -- --check
 every state machine directly — including a differential check that fixed-point rounding
 never favours the user over the pool.
 
-**66 runtime tests** ([`tests/integration/`](./tests/integration)) execute the real BPF
+**74 runtime tests** ([`tests/integration/`](./tests/integration)) execute the real BPF
 programs against the real Token-2022 program via LiteSVM: the full authority chain (a
 passed, timelocked proposal moving treasury funds), the staking withdrawal paths, and a
 negative test for each attack in the [threat model](./docs/THREAT-MODEL.md) — direct
 treasury calls, pre-timelock execution, double execution, double voting, flash-staked
 voting, and substituted destinations.
 
-Of 54 documented invariants, **49 are verified, 2 partial, 3 untested** — tracked row by
+Of 55 documented invariants, **52 are verified, 3 untested** — tracked row by
 row in [INVARIANTS.md](./docs/INVARIANTS.md). That table is kept honest deliberately: a
 claim no test can falsify is documentation, not a guarantee.
 
