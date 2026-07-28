@@ -5,26 +5,23 @@ point: each program owns exactly one concern and holds authority over exactly on
 class of asset, and they reach each other through PDA signatures rather than through
 shared admin keys.
 
-```
-                      ┌──────────────────┐
-                      │  token-manager   │  owns: mint authority
-                      │                  │  HLX mint (Token-2022)
-                      └────────┬─────────┘
-                               │ mint_to (CPI, PDA-signed)
-                               │ caller must be a registered minter
-                      ┌────────▼─────────┐
-        stake HLX ───▶│     staking      │  owns: stake vault + reward vault
-                      │                  │  emits: VoterWeightRecord
-                      └────────┬─────────┘
-                               │ reads weighted stake
-                      ┌────────▼─────────┐
-                      │   governance     │  owns: nothing transferable
-                      │  proposals+vote  │  produces: timelocked, executable actions
-                      └────────┬─────────┘
-                               │ execute (CPI, PDA-signed)
-                      ┌────────▼─────────┐
-                      │    treasury      │  owns: protocol funds, vesting streams
-                      └──────────────────┘
+```mermaid
+graph TD
+    U(["holder"])
+
+    TM["<b>token-manager</b><br/>owns: mint authority<br/>HLX mint (Token-2022)"]
+    ST["<b>staking</b><br/>owns: stake vault + reward vault<br/>produces: position weight"]
+    GV["<b>governance</b><br/>owns: nothing transferable<br/>produces: timelocked actions"]
+    TR["<b>treasury</b><br/>owns: protocol funds<br/>+ vesting streams"]
+
+    U -->|"stake HLX"| ST
+    U -->|"create proposal / vote"| GV
+
+    TM -->|"mint_to — PDA-signed CPI<br/>caller must be a registered minter,<br/>within its epoch cap"| ST
+    ST -->|"position weight, only if<br/>lock_end ≥ voting_ends_at"| GV
+    GV -->|"spend — PDA-signed CPI,<br/>only after quorum + timelock"| TR
+    GV -->|"set_reward_rate — PDA-signed CPI"| ST
+    TR -->|"vesting claim"| U
 ```
 
 There is no address that can move treasury funds directly. `treasury` accepts spend
@@ -144,13 +141,33 @@ is cheap precisely because the surrounding design was chosen to make it cheap.
 
 ### Lifecycle
 
+```mermaid
+stateDiagram-v2
+    [*] --> Draft: create_proposal<br/>(weight ≥ threshold)
+    Draft --> Voting: activate<br/>snapshots total_weighted
+    Voting --> Succeeded: finalize<br/>quorum + approval
+    Voting --> Defeated: finalize<br/>otherwise
+    Succeeded --> Queued: queue<br/>eta = now + timelock
+    Queued --> Executed: execute<br/>after eta, before expiry
+
+    Draft --> Cancelled: guardian veto
+    Voting --> Cancelled: guardian veto
+    Succeeded --> Cancelled: guardian veto
+    Queued --> Cancelled: guardian veto
+
+    Defeated --> [*]
+    Executed --> [*]
+    Cancelled --> [*]
 ```
-Draft ──activate──▶ Voting ──┬─(quorum + approval)─▶ Succeeded ──queue──▶ Queued
-                             │                                              │
-                             └─(else)──────────────▶ Defeated          (eta elapsed)
-                                                                            │
-   Cancelled ◀──guardian veto, any pre-execution state──               Executed
-```
+
+There is no `Expired` state. Once the grace period elapses, `execute` simply refuses and
+the proposal remains `Queued` forever — inert, but still on chain. Adding a state would
+require someone to pay for a transaction to mark it, which nobody has an incentive to do,
+so the state would be unreliable exactly when it mattered.
+
+`activate`, `finalize`, `queue` and `execute` are all permissionless: each is a pure
+function of state already on chain, so there is nothing to decide, only to record. Gating
+them would let whoever held the permission strand a proposal they disliked forever.
 
 - **Quorum**: `for + against + abstain >= quorum_bps` of total weighted stake.
 - **Approval**: `for > against` and `for >= approval_bps` of (`for + against`).
@@ -211,8 +228,11 @@ then **exits 0 anyway**, emitting a `.so` that "builds fine" and may corrupt mem
 runtime. Boxing moves the deserialised accounts to the heap. CI greps the build log for
 `stack offset` rather than trusting the exit code.
 
-**Events on every state transition**, consumed by [`indexer/`](../indexer) to build the
-analytics dashboard without polling account state.
+**Events on every state transition**, each carrying an on-chain timestamp so replaying the
+log is deterministic. This is what lets an indexer reconstruct history rather than only
+the present state, without polling accounts. The indexer and dashboard that consume them
+are Phases 4 and 5 of [ROADMAP.md](./ROADMAP.md) and are not built yet — the events exist
+first because retrofitting them later means losing all history before the retrofit.
 
 **Errors are specific.** One variant per failure mode, not a general `InvalidArgument`.
 An error enum is the program's user interface when something goes wrong.

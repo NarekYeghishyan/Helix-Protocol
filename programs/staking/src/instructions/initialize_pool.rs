@@ -88,6 +88,7 @@ pub fn initialize_pool(ctx: Context<InitializePool>) -> Result<()> {
     pool.last_update_ts = now;
 
     pool.total_rewards_funded = 0;
+    pool.total_rewards_accrued = 0;
     pool.total_rewards_paid = 0;
     pool.position_count = 0;
     pool.paused = false;

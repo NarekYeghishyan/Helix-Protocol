@@ -102,7 +102,12 @@ pub struct Pool {
     /// Timestamp the accumulator was last advanced to.
     pub last_update_ts: i64,
 
+    /// Total ever deposited into the reward vault. Analytics only — see
+    /// [`Self::unpaid_liability`] for why this must not be used as a liability.
     pub total_rewards_funded: u64,
+    /// Total that has become claimable by positions, accumulated as the
+    /// accumulator advances. This is the real liability.
+    pub total_rewards_accrued: u64,
     pub total_rewards_paid: u64,
 
     /// Monotonic counter used to seed position PDAs.
@@ -147,6 +152,26 @@ impl Pool {
                 .reward_per_token
                 .checked_add(delta)
                 .ok_or(StakingError::MathOverflow)?;
+
+            // Book the full `emitted` amount as liability, not the truncated
+            // per-step distribution.
+            //
+            // A liability estimate must never be too low, and deriving it back
+            // from `delta` is too low: `earned()` performs one division over the
+            // whole accumulated `reward_per_token`, while a per-step derivation
+            // sums many truncated divisions, and `Σ floor(aᵢ) <= floor(Σ aᵢ)`.
+            // Under-counting here would let `set_reward_rate` approve a rate the
+            // vault cannot cover.
+            //
+            // `emitted` is an upper bound on what all positions can ever claim
+            // (the property asserted by `rounding_always_favours_the_pool`), so
+            // it errs toward over-stating debt. The cost is that retained dust
+            // reads as liability and makes the solvency check marginally
+            // stricter — the right direction to be wrong in.
+            self.total_rewards_accrued = self
+                .total_rewards_accrued
+                .checked_add(u64::try_from(emitted).map_err(|_| StakingError::MathOverflow)?)
+                .ok_or(StakingError::MathOverflow)?;
         }
 
         // Advance the clock even when nothing accrued — when total_weighted is
@@ -159,11 +184,22 @@ impl Pool {
         Ok(())
     }
 
-    /// Rewards still outstanding to stakers, given the current accumulator.
+    /// Rewards that have accrued to stakers but not yet been claimed.
     ///
-    /// Used by `set_reward_rate` to refuse a rate the vault cannot sustain.
+    /// This is deliberately `accrued - paid` and **not** `funded - paid`. The
+    /// distinction is the whole correctness of `set_reward_rate`: the vault
+    /// balance is itself approximately `funded - paid`, so using deposits as the
+    /// liability makes the solvency check
+    ///
+    /// ```text
+    /// (funded - paid) + committed <= vault.amount ≈ (funded - paid)
+    /// ```
+    ///
+    /// which collapses to `committed <= 0` and rejects every non-zero rate. The
+    /// pool would be unable to pay rewards at all, and the failure would look
+    /// like a configuration problem rather than an accounting one.
     pub fn unpaid_liability(&self) -> Result<u64> {
-        self.total_rewards_funded
+        self.total_rewards_accrued
             .checked_sub(self.total_rewards_paid)
             .ok_or_else(|| StakingError::MathOverflow.into())
     }
@@ -284,6 +320,7 @@ mod tests {
             reward_per_token: 0,
             last_update_ts: 0,
             total_rewards_funded: 0,
+            total_rewards_accrued: 0,
             total_rewards_paid: 0,
             position_count: 0,
             paused: false,
@@ -555,6 +592,101 @@ mod tests {
     }
 
     // ------------------------------------------------------------- solvency
+
+    /// Mirrors the check inside `set_reward_rate`, so the guard's arithmetic is
+    /// tested rather than only its two halves.
+    fn solvency_ok(p: &Pool, vault_balance: u64, rate: u64, now: i64) -> bool {
+        let required = p.unpaid_liability().unwrap() + p.emission_for(rate, now).unwrap();
+        required <= vault_balance
+    }
+
+    #[test]
+    fn a_funded_pool_can_actually_set_a_nonzero_rate() {
+        // Regression test. `unpaid_liability` previously returned
+        // `funded - paid`, but the vault balance is also `funded - paid`, so the
+        // guard collapsed to `committed <= 0` and rejected every non-zero rate —
+        // the pool could never pay rewards at all.
+        let mut p = pool(0, 1_000);
+        p.total_rewards_funded = 100_000;
+        let vault = 100_000;
+
+        // 100/s for 1000s commits 100_000, exactly what the vault holds.
+        assert!(solvency_ok(&p, vault, 100, 0));
+        // One unit per second more than the vault can cover is refused.
+        assert!(!solvency_ok(&p, vault, 101, 0));
+    }
+
+    #[test]
+    fn accrued_rewards_count_against_a_new_rate() {
+        let mut p = pool(100, 10_000);
+        p.total_rewards_funded = 100_000;
+        p.total_weighted = 1_000;
+
+        // Run for 200s: 20_000 becomes claimable.
+        p.update_rewards(200).unwrap();
+        assert_eq!(p.total_rewards_accrued, 20_000);
+        assert_eq!(p.unpaid_liability().unwrap(), 20_000);
+
+        // The vault still holds everything, but 20_000 of it is already owed, so
+        // only the remaining 80_000 may be committed to future emission.
+        let vault = 100_000;
+        p.reward_period_end = 1_000;
+        assert!(solvency_ok(&p, vault, 100, 200)); // 20k owed + 80k committed
+        assert!(!solvency_ok(&p, vault, 101, 200));
+    }
+
+    #[test]
+    fn claimed_rewards_stop_being_a_liability() {
+        let mut p = pool(100, 10_000);
+        p.total_weighted = 1_000;
+        p.update_rewards(200).unwrap();
+        assert_eq!(p.unpaid_liability().unwrap(), 20_000);
+
+        // Paying a staker discharges the debt; it must not be counted twice.
+        p.total_rewards_paid = 20_000;
+        assert_eq!(p.unpaid_liability().unwrap(), 0);
+    }
+
+    #[test]
+    fn liability_is_never_understated() {
+        // The direction that matters. Weights chosen to divide badly, and an
+        // interval that does not divide evenly, so truncation is in play at
+        // every step.
+        //
+        // An earlier version derived liability back from `delta` per step, which
+        // summed many truncated divisions and came out *below* what a position
+        // could actually claim in one division — understating debt and letting
+        // `set_reward_rate` approve an unfundable rate.
+        let mut p = pool(1_000, 1_000_000);
+        p.total_weighted = 999_991;
+
+        for t in 1..=50 {
+            p.update_rewards(t * 7).unwrap();
+        }
+
+        // Liability must cover everything the whole pool could claim.
+        let pos = position(999_991, LockTier::Flexible);
+        assert!(
+            pos.earned(p.reward_per_token).unwrap() <= p.total_rewards_accrued,
+            "claimable {} exceeds booked liability {}",
+            pos.earned(p.reward_per_token).unwrap(),
+            p.total_rewards_accrued
+        );
+
+        // And it must not exceed what was actually emitted, or the pool would
+        // refuse rates it can genuinely afford.
+        assert_eq!(p.total_rewards_accrued, 50 * 7 * 1_000);
+    }
+
+    #[test]
+    fn idle_time_accrues_no_liability() {
+        // With nothing staked, emissions are forfeited to the vault rather than
+        // owed to anyone, so they must not be booked as debt.
+        let mut p = pool(1_000, 1_000_000);
+        p.update_rewards(5_000).unwrap();
+        assert_eq!(p.total_rewards_accrued, 0);
+        assert_eq!(p.unpaid_liability().unwrap(), 0);
+    }
 
     #[test]
     fn emission_for_reports_the_full_commitment() {

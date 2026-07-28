@@ -1,98 +1,154 @@
 # Invariants
 
-Properties that must hold after **every** instruction, in every state. Each one names
-the test that asserts it. If you change a program and one of these tests goes red, the
-change is wrong until proven otherwise.
+Properties that must hold after **every** instruction, in every state.
+
+Each row names the test that asserts it and whether that test **exists yet**. The status
+column is the honest part of this document: most aggregate invariants can only be checked
+against real accounts, so they are unreachable by unit tests and currently unverified.
+An invariant with no test is a design intention, not a guarantee.
+
+| | Meaning |
+|---|---|
+| ✅ | Asserted by a passing test today |
+| ◐ | The arithmetic is unit-tested; the aggregate property over real accounts is not |
+| ⬜ | No test yet — see [ROADMAP.md](./ROADMAP.md) for the phase that adds it |
 
 Notation: `Σ` sums over all accounts of that type belonging to the pool/realm.
+
+**Current totals across 46 invariants: 22 ✅ · 6 ◐ · 18 ⬜.**
+
+The gap is not randomly distributed. Everything provable from pure functions is proven;
+everything requiring real accounts, real CPIs or a real Token-2022 mint is not. That is
+precisely the boundary of what unit tests can reach, which is why integration tests are
+Phase 2 and everything else waits behind them.
 
 ---
 
 ## 1. Solvency
 
-| # | Invariant | Test |
-|---|-----------|------|
-| 1.1 | `Σ position.amount == stake_vault.amount` | `staking::solvency_stake_vault` |
-| 1.2 | `Σ (position.pending + earned(position)) <= reward_vault.amount` | `staking::solvency_reward_vault` |
-| 1.3 | `pool.total_staked == Σ position.amount` | `staking::total_staked_matches` |
-| 1.4 | `pool.total_weighted == Σ position.weighted_amount` | `staking::total_weighted_matches` |
-| 1.5 | `Σ stream.claimed <= Σ stream.total_amount` | `treasury::vesting_never_overclaims` |
-| 1.6 | `Σ (stream.total_amount - stream.claimed) <= treasury_vault.amount` | `treasury::streams_are_funded` |
+| # | Invariant | Test | Status |
+|---|-----------|------|--------|
+| 1.1 | `Σ position.amount == stake_vault.amount` | `staking::solvency_stake_vault` | ⬜ P2 |
+| 1.2 | `Σ (position.pending + earned(position)) <= reward_vault.amount` | `liability_is_never_understated` | ◐ |
+| 1.3 | `pool.total_staked == Σ position.amount` | `staking::total_staked_matches` | ⬜ P2 |
+| 1.4 | `pool.total_weighted == Σ position.weighted_amount` | `staking::total_weighted_matches` | ⬜ P2 |
+| 1.5 | `Σ stream.claimed <= Σ stream.total_amount` | `outstanding_tracks_the_unclaimed_remainder` | ◐ |
+| 1.6 | `Σ (stream.total_amount - stream.claimed) <= treasury_vault.amount` | `uncommitted_excludes_stream_obligations` | ◐ |
 
 1.2 is the one that matters. A reward pool that can promise more than it holds is
-insolvent the moment the last user tries to claim, and the failure surfaces as a
-confusing transfer error for whoever claims last — not as an alert for the operator.
-`fund_rewards` is the only way the right-hand side grows, and `set_reward_rate`
-rejects a rate that cannot be sustained to `reward_period_end`.
+insolvent from that moment, and the failure surfaces much later as a confusing transfer
+error for whoever claims last.
+
+The guard enforcing it lives in `set_reward_rate`, and it is where
+[F-2](./SECURITY-ASSESSMENT.md#f-2--reward-liability-computed-from-deposits) was found:
+liability was computed from deposits rather than accruals, which made the check reject
+every non-zero rate. Liability is now `accrued - paid`, and deliberately **over**-states
+debt by the retained rounding dust — a liability estimate must never be too low.
 
 ## 2. Token-2022 transfer fees
 
-| # | Invariant | Test |
-|---|-----------|------|
-| 2.1 | Credited stake == observed vault balance delta, never the `amount` argument | `staking::fee_mint_credits_delta` |
-| 2.2 | Depositing `n` into a fee-bearing mint credits `< n`, and 1.1 still holds | `staking::fee_mint_preserves_solvency` |
+| # | Invariant | Test | Status |
+|---|-----------|------|--------|
+| 2.1 | Credited stake == observed vault balance delta, never the `amount` argument | `staking::fee_mint_credits_delta` | ⬜ **P2.3** |
+| 2.2 | Depositing `n` into a fee-bearing mint credits `< n`, and 1.1 still holds | `staking::fee_mint_preserves_solvency` | ⬜ **P2.3** |
 
-If the mint carries a transfer-fee extension, `transfer_checked` moves `amount` but
-the vault receives `amount - fee`. Crediting the user `amount` breaks 1.1 immediately
-and lets the pool be drained by repeated deposit/withdraw cycles. Every deposit reads
-the vault balance before and after and credits the difference.
+If the mint carries a transfer-fee extension, `transfer_checked` moves `amount` but the
+vault receives `amount - fee`. Crediting `amount` breaks 1.1 immediately and lets the pool
+be drained by repeated deposit/withdraw cycles. Every deposit path reads the vault balance
+before and after and credits the difference.
+
+**This is the single most important untested invariant.** On a plain SPL mint the delta and
+the argument are identical, so *every current test would pass either way* — the correct
+behaviour could be removed and nothing would go red. Until the suite runs against a
+fee-bearing mint, 2.1 is a property of the source, not an observed fact.
 
 ## 3. Reward accounting
 
-| # | Invariant | Test |
-|---|-----------|------|
-| 3.1 | `reward_per_token` is monotonically non-decreasing | `staking::rpt_monotonic` |
-| 3.2 | `Σ rewards_paid <= reward_rate * (last_update_ts - start_ts)` | `staking::never_overpays_emission` |
-| 3.3 | Rounding always favours the pool: `Σ earned <= exact_entitlement` | `staking::rounding_favours_pool` |
-| 3.4 | A position opened and closed within one slot earns 0 | `staking::no_same_slot_yield` |
-| 3.5 | `update_pool` is idempotent within a slot | `staking::update_pool_idempotent` |
+| # | Invariant | Test | Status |
+|---|-----------|------|--------|
+| 3.1 | `reward_per_token` is monotonically non-decreasing | `accumulator_is_monotonic` | ✅ |
+| 3.2 | Booked liability never understates what positions can claim | `liability_is_never_understated` | ✅ |
+| 3.3 | Rounding always favours the pool: `Σ earned <= exact_entitlement` | `rounding_always_favours_the_pool` | ✅ |
+| 3.4 | A position opened and closed within one timestamp earns 0 | `open_and_close_within_one_timestamp_earns_nothing` | ✅ |
+| 3.5 | `update_rewards` is idempotent within a timestamp | `update_is_idempotent_within_a_timestamp` | ✅ |
+| 3.6 | A stale timestamp never rewinds the pool or double-credits | `clock_never_runs_backwards` | ✅ |
+| 3.7 | Emissions stop at `reward_period_end` | `emissions_stop_at_period_end` | ✅ |
+| 3.8 | Idle time (no stake) accrues no liability and pays nobody | `idle_time_accrues_no_liability` | ✅ |
+| 3.9 | A position earns nothing for time before it existed | `a_position_earns_nothing_for_time_before_it_existed` | ✅ |
 
-3.3 is checked with a differential test: an exact rational computation in the test
-harness versus the on-chain fixed-point result, asserting the on-chain value is never
-larger.
+3.3 is checked differentially: an exact computation in the test harness versus the
+on-chain fixed-point result, asserting the on-chain value is never larger.
 
 ## 4. Governance integrity
 
-| # | Invariant | Test |
-|---|-----------|------|
-| 4.1 | One `VoteRecord` per `(proposal, position)` — double voting is impossible | `governance::no_double_vote` |
-| 4.2 | Vote weight is only counted if `position.lock_end >= proposal.voting_ends_at` | `governance::flash_stake_cannot_vote` |
-| 4.3 | `proposal.for + against + abstain <= total_weighted` at snapshot | `governance::votes_bounded_by_supply` |
-| 4.4 | No proposal executes before `eta` | `governance::timelock_enforced` |
-| 4.5 | No proposal executes twice | `governance::no_double_execute` |
-| 4.6 | State transitions follow the documented lifecycle; no state is skipped | `governance::lifecycle_transitions` |
-| 4.7 | The guardian can only cancel — never pass, queue, or execute | `governance::guardian_is_veto_only` |
+| # | Invariant | Test | Status |
+|---|-----------|------|--------|
+| 4.1 | One `VoteRecord` per `(proposal, position)` — double voting impossible | `governance::no_double_vote` | ⬜ P2.4 |
+| 4.2 | Vote weight counted only if `position.lock_end >= proposal.voting_ends_at` | `lock_gate_rejects_freshly_opened_positions`, `a_lock_expiring_mid_vote_cannot_vote` | ✅ |
+| 4.3 | `for + against + abstain <= total_weight_snapshot` | `governance::votes_bounded_by_supply` | ⬜ P2.4 |
+| 4.4 | No proposal executes before `eta` | `governance::timelock_enforced` | ⬜ P2.4 |
+| 4.5 | No proposal executes twice | `governance::no_double_execute` | ⬜ P2.4 |
+| 4.6 | State transitions follow the documented lifecycle; no state is skipped | `require_state_gates_transitions`, `terminal_states_are_terminal` | ✅ |
+| 4.7 | The guardian can only cancel — never pass, queue, or execute | `guardian_can_veto_until_executed` | ◐ |
+| 4.8 | Quorum and approval lose nothing to rounding | `quorum_is_not_lost_to_rounding`, `supermajority_threshold` | ✅ |
+| 4.9 | Abstentions count toward quorum but never toward approval | `abstentions_do_not_help_approval` | ✅ |
+| 4.10 | A queued proposal expires and cannot execute afterwards | `queued_proposals_expire` | ◐ |
+
+4.7 is marked ◐ because the *veto window* is tested but the "guardian has no other power"
+half is currently established by inspection — `realm.guardian` is read in exactly one
+instruction. A runtime test attempting every other instruction as guardian would make it ✅.
 
 ## 5. Authority
 
-| # | Invariant | Test |
-|---|-----------|------|
-| 5.1 | Treasury funds move only under the governance execution PDA's signature | `treasury::only_governance_spends` |
-| 5.2 | HLX is minted only by a registered minter, within its epoch cap | `token_manager::minter_registry_enforced` |
-| 5.3 | No mint authority is held by any non-PDA address after `initialize_token` | `token_manager::mint_authority_is_pda` |
-| 5.4 | Admin transfer requires both `propose` and `accept` | `token_manager::two_step_admin` |
-| 5.5 | Every PDA is derived with a stored, verified bump | `*::canonical_bumps` |
+| # | Invariant | Test | Status |
+|---|-----------|------|--------|
+| 5.1 | Treasury funds move only under the governance executor's signature | `treasury::only_governance_spends` | ⬜ P2.4 |
+| 5.2 | HLX is minted only by a registered minter, within its epoch cap | `accrues_within_cap`, `rejects_over_cap_without_mutating` | ◐ |
+| 5.3 | No non-PDA address holds mint authority after `initialize_token` | `token_manager::mint_authority_is_pda` | ⬜ P2 |
+| 5.4 | Admin transfer requires both `propose` and `accept` | `token_manager::two_step_admin` | ⬜ P2 |
+| 5.5 | Every PDA is derived with a stored, verified bump | `*::canonical_bumps` | ⬜ P2 |
+| 5.6 | An epoch cap grants no accumulated allowance for idle epochs | `skipping_epochs_does_not_accumulate_allowance` | ✅ |
+| 5.7 | A treasury spend cap likewise does not accumulate | `idle_epochs_do_not_accumulate_budget` | ✅ |
+| 5.8 | Initialisers cannot install an unintended authority | *(none — see [F-1](./SECURITY-ASSESSMENT.md#f-1--initialisers-are-front-runnable))* | ⬜ P3 |
 
 ## 6. Liveness
 
-| # | Invariant | Test |
-|---|-----------|------|
-| 6.1 | `claim` succeeds regardless of lock state | `staking::claim_ignores_lock` |
-| 6.2 | `unstake` after `lock_end` always succeeds if the vault is solvent | `staking::unstake_after_lock_always_works` |
-| 6.3 | No instruction's compute cost grows with the number of stakers or voters | `bench::compute_is_constant` |
-| 6.4 | Pausing cannot trap user principal — `unstake` and `claim` stay live | `staking::pause_does_not_trap_funds` |
+| # | Invariant | Test | Status |
+|---|-----------|------|--------|
+| 6.1 | `claim` succeeds regardless of lock state | `staking::claim_ignores_lock` | ⬜ P2 |
+| 6.2 | `unstake` after `lock_end` always succeeds if the vault is solvent | `staking::unstake_after_lock_always_works` | ⬜ P2 |
+| 6.3 | No instruction's compute cost grows with staker or voter count | `bench::compute_is_constant` | ⬜ P6 |
+| 6.4 | Pausing cannot trap principal — `unstake` and `claim` stay live | `staking::pause_does_not_trap_funds` | ⬜ P2 |
 
 6.4 is a deliberate limit on the pause switch. A pause that stops withdrawals is
-indistinguishable from a rug from the user's side; Helix's pause blocks *new* deposits
+indistinguishable from a rug from the user's side; the pause here blocks *new* deposits
 and rate changes only.
+
+6.3 currently follows from the absence of any loop over user-growable sets, which is a
+sound argument but not a measurement — compute has non-obvious contributors, account
+deserialisation especially.
+
+## 7. Vesting
+
+| # | Invariant | Test | Status |
+|---|-----------|------|--------|
+| 7.1 | Nothing is claimable before the cliff | `nothing_vests_before_the_cliff` | ✅ |
+| 7.2 | The cliff releases everything accrued since `start_ts` | `the_cliff_releases_everything_accrued_since_start` | ✅ |
+| 7.3 | Exactly `total_amount` vests by `end_ts`, and never more | `the_full_amount_vests_at_the_end_and_never_more` | ✅ |
+| 7.4 | Truncation favours the treasury, but the endpoint still pays in full | `vesting_truncates_in_the_treasurys_favour` | ✅ |
+| 7.5 | A revoke freezes accrual and never claws back vested tokens | `revoke_freezes_vesting_without_clawing_back` | ✅ |
+| 7.6 | Already-claimed tokens survive a revoke | `already_claimed_tokens_survive_a_revoke` | ✅ |
+| 7.7 | The unvested remainder returns to the treasury's spendable balance | `unvested_remainder_returns_to_the_treasury` | ✅ |
 
 ---
 
-## Running the invariant suite
+## Running the suite
 
 ```bash
-anchor test                      # full suite, Surfpool validator
-cargo test -p helix-staking      # fast Rust unit + LiteSVM tests
-cargo test --test invariants     # property tests only
-trident fuzz run                 # stateful fuzzing (see docs/FUZZING.md)
+cargo test --workspace --lib     # 65 unit tests — everything marked ✅ above
+cargo clippy --workspace --all-targets -- -D warnings
+anchor build 2>&1 | tee build.log && grep -i "stack offset" build.log   # must be empty
 ```
+
+Integration and fuzz suites do not exist yet. See [TESTING.md](./TESTING.md) for the
+planned design and [ROADMAP.md](./ROADMAP.md) for sequencing.

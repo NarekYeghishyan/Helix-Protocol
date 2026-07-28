@@ -5,25 +5,43 @@ Rust with the Anchor framework.
 
 [![CI](https://github.com/narekyeghishyan/helix-protocol/actions/workflows/ci.yml/badge.svg)](https://github.com/narekyeghishyan/helix-protocol/actions/workflows/ci.yml)
 [![Anchor](https://img.shields.io/badge/anchor-1.1.2-blue)](https://www.anchor-lang.com)
+[![Solana](https://img.shields.io/badge/solana-3.x-purple)](https://solana.com)
 [![License](https://img.shields.io/badge/license-Apache--2.0-green)](./LICENSE)
 
-> **Status: unaudited, devnet only.** See [SECURITY.md](./SECURITY.md).
+> **Status: unaudited. Not deployed.** All four programs build to BPF and pass their
+> unit suites locally. Integration tests, the analytics stack and a devnet deployment
+> are scoped in [ROADMAP.md](./docs/ROADMAP.md). Nothing here has held real value.
+> See [SECURITY.md](./SECURITY.md).
 
-Four programs that compose into one system. Nothing here is a wrapper around an
-existing protocol — the reward accounting, the vote-weight mechanism and the
-governance state machine are implemented from scratch, and the reasoning behind each
-is written down in [`docs/`](./docs).
+Four programs that compose into one system. Nothing here wraps an existing protocol —
+the reward accounting, the vote-weight mechanism and the governance state machine are
+implemented from scratch, and the reasoning behind each is written down in
+[`docs/`](./docs).
 
-| Program | Responsibility | Holds authority over |
-|---------|---------------|---------------------|
-| [`token-manager`](./programs/token-manager) | HLX mint (Token-2022), minter registry, epoch caps | The mint authority |
-| [`staking`](./programs/staking) | Lock tiers, O(1) reward distribution, voter weight | Stake + reward vaults |
-| [`governance`](./programs/governance) | Proposals, voting, quorum, timelock | Nothing transferable |
-| [`treasury`](./programs/treasury) | Protocol funds, vesting streams, spend limits | Treasury vault |
+| Program | Responsibility | Holds authority over | Unit tests |
+|---------|---------------|---------------------|-----------|
+| [`token-manager`](./programs/token-manager) | HLX mint (Token-2022), minter registry, epoch caps | The mint authority | 7 |
+| [`staking`](./programs/staking) | Lock tiers, O(1) reward distribution | Stake + reward vaults | 24 |
+| [`governance`](./programs/governance) | Proposals, voting, quorum, timelock | Nothing transferable | 17 |
+| [`treasury`](./programs/treasury) | Protocol funds, vesting streams, spend limits | Treasury vault | 17 |
 
-Plus a [Next.js dashboard](./app) with wallet-adapter integration and an
-[event indexer](./indexer) that turns on-chain events into the analytics the dashboard
-reads.
+```mermaid
+graph TD
+    TM["token-manager<br/><i>owns the mint authority</i>"]
+    ST["staking<br/><i>owns stake + reward vaults</i>"]
+    GV["governance<br/><i>owns nothing transferable</i>"]
+    TR["treasury<br/><i>owns protocol funds</i>"]
+
+    TM -->|"mint_to — PDA-signed CPI,<br/>caller must be a registered minter"| ST
+    ST -->|"position weight,<br/>gated on lock_end"| GV
+    GV -->|"spend — only after quorum<br/>+ timelock, PDA-signed CPI"| TR
+    GV -->|"set_reward_rate"| ST
+```
+
+There is no address that can move treasury funds. `treasury` accepts spend instructions
+from exactly one signer — the `governance` execution PDA — and `governance` will only
+produce that signature after a proposal has passed quorum *and* cleared its timelock.
+That chain is the security model.
 
 ---
 
@@ -31,76 +49,87 @@ reads.
 
 **Reward distribution is O(1), not O(stakers).** Rewards use a `reward_per_token`
 accumulator in u128 fixed point — the Synthetix/MasterChef shape. No instruction
-iterates over the staker set. The naive alternative works fine with ten stakers in a
-test and permanently bricks the pool at ten thousand, when distribution exceeds the
-compute budget. [Details](./docs/ARCHITECTURE.md#reward-accounting).
+iterates over the staker set. The naive alternative passes a ten-staker test and then
+permanently bricks the pool at ten thousand, once distribution exceeds the compute
+budget. → [`staking/src/state.rs`](./programs/staking/src/state.rs),
+[architecture](./docs/ARCHITECTURE.md#reward-accounting).
 
 **Flash-loan governance attacks fail by construction.** A position may vote only if
 `lock_end >= proposal.voting_ends_at` — you can only vote with stake you are unable to
-withdraw before the vote closes. Borrowed capital has `lock_end == now` and carries
-zero weight. This is stronger than a snapshot (which can be gamed by borrowing before
-the snapshot) and costs one comparison rather than a history of balance checkpoints.
-[Details](./docs/THREAT-MODEL.md#a1--flash-loan-governance-capture).
+withdraw before the vote closes. Borrowed capital has `lock_end == now` and carries zero
+weight. Stronger than a snapshot, which can be gamed by borrowing *before* the snapshot
+block, and it costs one comparison rather than a history of balance checkpoints. →
+[`governance/src/instructions/vote.rs`](./programs/governance/src/instructions/vote.rs),
+[threat model](./docs/THREAT-MODEL.md#a1--flash-loan-governance-capture).
 
-**Token-2022 transfer fees are handled honestly.** When a mint carries the
-transfer-fee extension, the amount sent is not the amount that arrives. Every deposit
-path credits the *observed vault balance delta*, never the `amount` argument. The
-staking suite runs end to end twice — once on a plain mint, once on a fee-bearing mint
-— because this bug is invisible until someone enables the extension.
-[Details](./docs/INVARIANTS.md#2-token-2022-transfer-fees).
+**Token-2022 transfer fees are accounted for.** When a mint carries the transfer-fee
+extension, the amount sent is not the amount that arrives. Every deposit path credits
+the *observed vault balance delta*, never the `amount` argument — crediting `amount`
+breaks solvency immediately and lets deposit/withdraw cycles drain the pool. Invisible
+on a plain SPL mint, which is why it gets missed. → [`staking/src/instructions/stake.rs`](./programs/staking/src/instructions/stake.rs),
+[invariants](./docs/INVARIANTS.md#2-token-2022-transfer-fees).
 
 ## Documentation
 
-| | |
+Structured as the five deliverables of an architecture-and-enhancement engagement.
+
+| | Deliverable |
 |---|---|
-| [ARCHITECTURE.md](./docs/ARCHITECTURE.md) | How the four programs compose, and why each design choice was made |
-| [INVARIANTS.md](./docs/INVARIANTS.md) | Properties that must always hold, each mapped to the test that asserts it |
+| [ARCHITECTURE-REVIEW.md](./docs/ARCHITECTURE-REVIEW.md) | **1 — Architecture review.** The review method, and it applied to this codebase: strengths, weaknesses, scalability limits, improvement opportunities |
+| [SECURITY-ASSESSMENT.md](./docs/SECURITY-ASSESSMENT.md) | **2 — Security assessment.** Access-control matrix, risk register with severities, recommended mitigations |
+| [ROADMAP.md](./docs/ROADMAP.md) | **3 — Technical roadmap.** Prioritised phases, milestones, estimates, and an explicit list of what is *not* built |
+| [ARCHITECTURE.md](./docs/ARCHITECTURE.md) | **4 — Enhancements.** How the four programs compose and why each design choice was made |
+| [INVARIANTS.md](./docs/INVARIANTS.md) · [TESTING.md](./docs/TESTING.md) · [RUNBOOK.md](./docs/RUNBOOK.md) | **5 — Documentation.** Invariants mapped to tests, testing procedures, deployment runbook |
 | [THREAT-MODEL.md](./docs/THREAT-MODEL.md) | Attacks defended, trust assumptions, and what is explicitly out of scope |
-| [SECURITY.md](./SECURITY.md) | Disclosure policy and security practices |
 
 ## Quick start
 
 Requires Linux or WSL2 — the Solana BPF toolchain does not build natively on Windows.
 
 ```bash
-# One-time toolchain setup (Rust, Solana CLI, Anchor, Node, Surfpool)
+# One-time toolchain setup (Rust, Solana CLI, Anchor, Node)
 bash scripts/bootstrap-wsl.sh
 
 # Program keypairs (gitignored; generated once per developer)
 node scripts/gen-program-keys.mjs
 anchor keys sync
 
-pnpm install
 anchor build
-anchor test
+cargo test --workspace --lib
 ```
+
+Toolchain: Anchor 1.1.2, Solana 3.1.10, Rust stable. See
+[RUNBOOK.md](./docs/RUNBOOK.md) for deployment.
 
 ## Repository layout
 
-```
+```text
 programs/
   token-manager/   HLX mint, minter registry, two-step admin transfer
-  staking/         lock tiers, reward accumulator, voter weight records
-  governance/      proposal lifecycle, vote tallying, timelock
+  staking/         lock tiers, reward accumulator, position accounting
+  governance/      proposal lifecycle, lock-gated voting, timelock
   treasury/        vault, vesting streams, per-epoch spend limits
-tests/             TypeScript integration + invariant assertions
-app/               Next.js dashboard, wallet-adapter
-indexer/           Anchor event → Postgres pipeline feeding the dashboard
-scripts/           toolchain bootstrap, key generation, deployment
-docs/              architecture, invariants, threat model
+scripts/           toolchain bootstrap, program key generation
+docs/              the five deliverables above
+.github/workflows/ fmt, clippy -D warnings, cargo-audit, build, test
 ```
 
 ## Testing
 
 ```bash
-cargo test --workspace --lib    # fast Rust unit tests (math, state transitions)
-anchor test                     # full integration suite against a local validator
-trident fuzz run                # stateful fuzzing
+cargo test --workspace --lib    # 65 unit tests: math, state machines, boundaries
+cargo clippy --workspace --all-targets -- -D warnings
+cargo fmt --all -- --check
+anchor build 2>&1 | tee build.log
+grep -i "stack offset" build.log   # must be empty — anchor build exits 0 even when it isn't
 ```
 
-The suite asserts the invariants in [INVARIANTS.md](./docs/INVARIANTS.md) directly,
-including a differential test of the fixed-point reward math against exact rational
-arithmetic, to prove rounding never favours the user over the pool.
+Current coverage is **unit-level**: the reward accumulator, the vesting schedule, the
+tally arithmetic and every state machine are tested directly, including a differential
+check that fixed-point rounding never favours the user over the pool. Cross-program
+wiring is proven to compile and type-check, but is **not yet proven at runtime** —
+integration tests against a validator are the top roadmap item. See
+[TESTING.md](./docs/TESTING.md) for what is and is not covered.
 
 ## License
 

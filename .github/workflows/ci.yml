@@ -130,8 +130,13 @@ jobs:
       - name: Rust unit tests
         run: cargo test --workspace --lib
 
-      - name: Anchor integration tests
-        run: anchor test
+      # Integration tests are ROADMAP Phase 2 and do not exist yet, so `anchor test`
+      # is deliberately not run — it would fail on an empty test glob, and stubbing it
+      # to pass would report a green integration suite that contains nothing.
+      # Re-enable this step in the same commit that adds tests/.
+      #
+      # - name: Anchor integration tests
+      #   run: anchor test
 
       - name: Upload build artifacts
         if: always()

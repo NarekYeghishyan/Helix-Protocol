@@ -37,12 +37,26 @@ capture, and anything requiring a user's own key.
 
 ## Security practices in this repository
 
+In place today:
+
 - `overflow-checks = true` in the release profile, plus explicit `checked_*` at every
   arithmetic site — the profile is a backstop, not the design
-- Documented invariants with tests that assert them: [docs/INVARIANTS.md](./docs/INVARIANTS.md)
-- Stateful fuzzing via Trident
-- CI runs `cargo clippy -D warnings`, `cargo audit`, and the full test suite on every push
-- Verifiable builds via `anchor verify` / `solana-verify`, so the deployed bytecode can
-  be reproduced from this source tree
-- Upgrade authority held by a multisig during beta, with transfer to governance as the
-  documented end state
+- Documented invariants, each marked with whether a test actually asserts it:
+  [docs/INVARIANTS.md](./docs/INVARIANTS.md)
+- A structured self-review with an access-control matrix and risk register:
+  [docs/SECURITY-ASSESSMENT.md](./docs/SECURITY-ASSESSMENT.md)
+- CI runs `cargo clippy -D warnings`, `cargo audit`, and the unit suite on every push,
+  and greps the build log for SBF stack-frame overflows — which `anchor build` reports as
+  errors while still exiting 0
+
+Planned, and **not** yet in place — see [docs/ROADMAP.md](./docs/ROADMAP.md):
+
+- Integration tests covering cross-program flows and fee-bearing Token-2022 mints
+  (Phase 2) — the largest current gap
+- Stateful fuzzing via Trident, with the invariant set as the oracle (Phase 6)
+- Verifiable builds via `solana-verify`, so deployed bytecode can be reproduced from this
+  source tree (Phase 3)
+- Upgrade authority held by a multisig, then transferred to governance (Phases 3 and 7)
+
+The distinction matters: an unaudited protocol that overstates its controls is more
+dangerous than one that states them plainly.

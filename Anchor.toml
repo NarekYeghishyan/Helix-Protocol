@@ -22,4 +22,8 @@ cluster = "localnet"
 wallet = "~/.config/solana/id.json"
 
 [scripts]
+# No integration tests exist yet (ROADMAP Phase 2). This command is left pointing at
+# the intended glob rather than stubbed to `true`: a test script that exits 0 with
+# nothing to run reports success for an empty suite, which is worse than reporting
+# that there is nothing wired up. `tests/README.md` explains the gap.
 test = "pnpm exec ts-mocha -p ./tsconfig.json -t 1000000 tests/**/*.spec.ts"
