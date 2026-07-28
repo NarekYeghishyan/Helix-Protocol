@@ -135,7 +135,7 @@ So a third party can confirm the deployed bytecode came from this source tree.
 
 ```bash
 solana-verify build
-solana-verify verify-from-repo -u devnet --program-id <ID> https://github.com/<org>/helix-protocol
+solana-verify verify-from-repo -u devnet --program-id <ID> https://github.com/NarekYeghishyan/Helix-Protocol
 ```
 
 Publish the resulting hash in the release notes. Without this, "the code is on GitHub"

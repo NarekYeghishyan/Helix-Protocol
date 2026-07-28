@@ -3,7 +3,7 @@
 A composable token, staking, governance and treasury suite for Solana, written in
 Rust with the Anchor framework.
 
-[![CI](https://github.com/narekyeghishyan/helix-protocol/actions/workflows/ci.yml/badge.svg)](https://github.com/narekyeghishyan/helix-protocol/actions/workflows/ci.yml)
+[![CI](https://github.com/NarekYeghishyan/Helix-Protocol/actions/workflows/ci.yml/badge.svg)](https://github.com/NarekYeghishyan/Helix-Protocol/actions/workflows/ci.yml)
 [![Anchor](https://img.shields.io/badge/anchor-1.1.2-blue)](https://www.anchor-lang.com)
 [![Solana](https://img.shields.io/badge/solana-3.x-purple)](https://solana.com)
 [![License](https://img.shields.io/badge/license-Apache--2.0-green)](./LICENSE)
