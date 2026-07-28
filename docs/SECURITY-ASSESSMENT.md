@@ -57,13 +57,14 @@ through the minter registry.
 | Instruction | Authority | Enforced by |
 |---|---|---|
 | `initialize_realm` | anyone, once per pool | `init` on a PDA seeded by the pool — **see F-1** |
-| `update_realm_params` | realm authority | `has_one = authority` + `Signer` |
+| `update_realm_params` | realm authority | `has_one = authority` + `Signer` — **see F-11**; reachable by proposal via `execute_update_realm_params` once the authority is the executor |
 | `create_proposal` | holder ≥ `min_weight_to_propose` | position `has_one = owner`, owner must equal the signer, weight compared |
 | `activate_proposal` | **anyone** | intentional; pure function of chain state |
 | `cast_vote` | position owner | owner constraint + `Signer` + **lock gate** + **electorate gate** + `init` on the vote record |
 | `finalize_proposal` / `queue_proposal` | **anyone** | intentional; pure functions of chain state |
 | `cancel_proposal` | guardian | `has_one = guardian` + `Signer`, and `is_cancellable()` |
 | `execute_*` | **anyone**, after `eta` | intentional; the timelock and state machine are the gate |
+| `execute_update_realm_params` / `execute_set_realm_authority` | **anyone**, after `eta` | the realm governing itself — **see F-11** |
 
 Permissionless `activate`/`finalize`/`queue`/`execute` is a deliberate choice. Each is a
 pure function of state already on chain, so there is nothing to decide, only to record.
@@ -100,6 +101,12 @@ graph LR
 There is no other inbound edge to `S`. Confirmed by grepping for every use of the
 treasury's `governance_executor` and the pool's `authority`.
 
+**But the edges are not the whole picture.** `realm.authority` sits *outside* this graph
+and can change what "proposal passes" means — lower the quorum far enough and the first
+node stops being a constraint at all. That is [F-11](#f-11--the-rules-of-governance-were-owned-from-outside-it),
+and the lesson is that an authority-reachability analysis has to include the parameters of
+the checks, not only their signers.
+
 ---
 
 ## 2. Findings
@@ -118,6 +125,7 @@ Severity = impact × likelihood, CVSS-style but judged rather than computed.
 | F-8 | Vesting, spend-cap and executor-migration instructions are unreachable | **Medium** | **Fixed** — found by attempting to test them |
 | F-9 | Token-manager admin cannot be handed to governance | **Low** | **Fixed** — same class as F-8 |
 | F-10 | Weight staked after activation could vote, inflating the quorum numerator against a fixed denominator | **High** | **Fixed** — found by stateful fuzzing |
+| F-11 | `realm.authority` could not be migrated, leaving the rules of governance owned by a key outside it | **High** | **Fixed** — found by applying review question 1 |
 
 ### F-1 — Initialisers are front-runnable
 
@@ -418,6 +426,59 @@ its voters before activating, because that is the order a person writes when des
 governance is supposed to work. The fuzzer had no such notion, generated the operations in
 the other order, and the oracle — checking §4.3 after every single step rather than at the
 end of a scenario — caught the arithmetic going wrong the moment it did.
+
+### F-11 — The rules of governance were owned from outside it
+
+**Severity:** High · **Status:** fixed
+
+`update_realm_params` sets what "passing" *means*: `quorum_bps`, `approval_bps`,
+`voting_period`, `timelock_delay`, `min_weight_to_propose`. It is gated on
+`realm.authority`, which `initialize_realm` writes once.
+
+Before this fix there was **no `ProposalAction` that could produce that signature, and no
+instruction that could move the authority anywhere.** The value written at initialisation
+was final. A realm bootstrapped by a human key therefore had its rules owned permanently
+by that key, and no vote could ever change or revoke it.
+
+**That is a path to the treasury**, which makes it more than a governance-hygiene problem.
+The holder does not need to beat quorum — they can lower it:
+
+```text
+update_realm_params(quorum_bps = 1, min_weight_to_propose = 1)   # 0.01%, the floor
+stake(dust) -> propose -> activate -> vote -> finalize -> queue  # ~1 hour of timelock
+execute(TreasuryTransfer { destination: attacker, amount: everything })
+```
+
+`lowering_quorum_lets_a_dust_position_move_the_treasury` runs exactly that: a position a
+thousandth the size of the silent majority moves the entire treasury. It contradicts the
+claim this repository leads with — *there is no address that can move treasury funds* —
+because the address does not move them, it rewrites the conditions under which they move.
+
+**Fix.** Two `ProposalAction` variants and their handlers in
+[`execute_realm.rs`](../programs/governance/src/instructions/execute_realm.rs):
+
+- `UpdateRealmParams { params }` — governance retunes itself. Validated with the same
+  `params.validate()` the direct instruction uses, *before* `authorize_execution`, so a
+  proposal carrying parameters the program would refuse fails without burning itself.
+- `SetRealmAuthority { new_authority }` — governance revokes the human key, in practice
+  pointing the authority at the realm's own executor PDA.
+
+Both are needed and neither is sufficient. Revoking the authority without a way to retune
+would freeze the realm's configuration permanently — the F-8 defect one step further
+along — which is why `governance_can_retune_its_own_parameters` asserts the second half.
+
+**Residual risk, deliberately left.** The authority still *starts* as whatever
+`initialize_realm` was given. Forcing it to equal the executor PDA at initialisation would
+close this completely, at the cost of being unable to tune a realm before handing it over.
+The chosen mitigation is the same shape as F-1's: the runbook migrates it, and the
+post-deploy checklist asserts `realm.authority == executor`. Until that step runs, the
+attack above is live — which is why the test demonstrating it is kept passing rather than
+inverted.
+
+**Found by** applying review question 1 from
+[AUDIT-READINESS.md](./AUDIT-READINESS.md) — *for every privileged instruction, which
+concrete transaction produces its signer?* — to the one instruction that had never been
+asked it. This is the fourth instance of that defect after F-2, F-8 and F-9.
 
 ### F-7 — Position accounts never closed
 

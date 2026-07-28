@@ -19,9 +19,9 @@ the count.
 |---|---:|---:|---|
 | [`token-manager`](../programs/token-manager) | 1,068 | 10 | The HLX mint authority |
 | [`staking`](../programs/staking) | 1,814 | 9 | Stake and reward vaults |
-| [`governance`](../programs/governance) | 2,537 | 21 | Nothing transferable |
+| [`governance`](../programs/governance) | 2,537 | 23 | Nothing transferable |
 | [`treasury`](../programs/treasury) | 1,319 | 8 | Protocol funds and vesting streams |
-| **Total** | **6,738** | **48** | |
+| **Total** | **6,738** | **50** | |
 
 Anchor 1.1.2, Solana 3.1.10, Token-2022. Line counts include unit tests and doc comments,
 which are a large share — the programs themselves are smaller than the figure suggests.
@@ -38,8 +38,8 @@ liquid staking derivatives. Reasons in [ROADMAP.md](./ROADMAP.md#explicitly-out-
 
 | | |
 |---|---|
-| Tests | 162 — 88 unit, 74 runtime against the real BPF programs |
-| Invariants | 55 documented, 52 verified, 3 untested — [INVARIANTS.md](./INVARIANTS.md) |
+| Tests | 168 — 88 unit, 80 runtime against the real BPF programs |
+| Invariants | 57 documented, 54 verified, 3 untested — [INVARIANTS.md](./INVARIANTS.md) |
 | Fuzzing | Stateful, invariants as the oracle, 22 sequences × 150 operations per run |
 | Compute | Every instruction measured; worst is 17.9% of the default budget |
 | Lints | `clippy -D warnings`, `fmt --check`, `cargo audit`, all clean in CI |
@@ -47,7 +47,7 @@ liquid staking derivatives. Reasons in [ROADMAP.md](./ROADMAP.md#explicitly-out-
 
 ## 3. Where the findings came from
 
-Ten findings. The interesting column is the last one.
+Eleven findings. The interesting column is the last one.
 
 | ID | Severity | Status | Found by |
 |---|---|---|---|
@@ -61,6 +61,7 @@ Ten findings. The interesting column is the last one.
 | F-8 | Medium | Fixed | **Attempting to test an instruction** and finding it unreachable |
 | F-9 | Low | Fixed | **Writing the deployment runbook** step by step |
 | F-10 | High | Fixed | **Stateful fuzzing** |
+| F-11 | High | Fixed | **Applying review question 1 below**, to the one instruction never asked it |
 
 Grouped by method:
 
@@ -71,15 +72,25 @@ Grouped by method:
   invisible to a per-program test suite because each individual piece is correct.
 - **Reading tool output nobody reads: 1** (F-3). `anchor build` reports SBF stack-frame
   overflows as `Error:` and exits 0.
-- **Fuzzing: 1** (F-10), the only one found by generated input, and a High.
+- **Fuzzing: 1** (F-10), a High, and the only one found by generated input.
+- **Applying a checklist written after the earlier findings: 1** (F-11), also a High.
+
+That last row is the one worth dwelling on. Review question 1 below was written *because*
+F-2, F-8 and F-9 turned out to be the same defect. Asking it of every privileged
+instruction then immediately produced a fourth instance — `update_realm_params`, whose
+signer no transaction could ever produce — and that one was a path to the treasury.
+Four of the eleven findings are now the same shape, which says the checklist is worth
+running exhaustively rather than opportunistically.
 
 **What that suggests for an external audit.** Reading the code found the things a careful
-reader finds — and none of the four bugs. The defects lived in *composition*: between two
+reader finds — and none of the five bugs. Every one lived in *composition*: between two
 correct halves (F-2), between an instruction and the set of transactions that can produce
-its signer (F-8, F-9), and between two guards that each looked sufficient alone (F-10).
+its signer (F-8, F-9, F-11), and between two guards that each looked sufficient alone
+(F-10).
 
-Three of the ten were the same structural defect — **an instruction gated on a signature
-no code path can produce** — which is why two review questions are now standing:
+Four of the eleven were the same structural defect — **an instruction gated on a signature
+no code path can produce** — which is why two review questions are now standing, and why
+the first has been applied to every privileged instruction rather than left as advice:
 
 1. For every privileged instruction, *which concrete transaction produces its signer?*
 2. When an authority is transferred, does the recipient also gain every *power* that
@@ -134,9 +145,9 @@ quorum parameters produce sensible governance dynamics is a question this docume
 touch; every claim here is about the code doing what it says, not about what it says being
 a good idea.
 
-**Written by the author of the code.** F-2, F-8, F-9 and F-10 were all found by building
-something that had to *use* the programs — a test, a runbook, a fuzzer — rather than by
-reading them. That is a strong hint about the shape of what remains: an external reviewer
+**Written by the author of the code.** F-2, F-8, F-9, F-10 and F-11 were all found by
+building something that had to *use* the programs — a test, a runbook, a fuzzer, a
+checklist — rather than by reading them. That is a strong hint about the shape of what remains: an external reviewer
 should expect the residue to be in composition and reachability rather than in any single
 handler.
 

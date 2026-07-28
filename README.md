@@ -8,7 +8,7 @@ Rust with the Anchor framework.
 [![Solana](https://img.shields.io/badge/solana-3.x-purple)](https://solana.com)
 [![License](https://img.shields.io/badge/license-Apache--2.0-green)](./LICENSE)
 
-> **Status: unaudited. Not deployed.** All four programs build to BPF and pass 162 tests
+> **Status: unaudited. Not deployed.** All four programs build to BPF and pass 168 tests
 > locally, including runtime tests that execute the full governance → treasury authority
 > chain and a real Token-2022 mint with transfer fees. The analytics stack and a devnet
 > deployment are scoped in [ROADMAP.md](./docs/ROADMAP.md). Nothing here has held real
@@ -144,7 +144,7 @@ yet, so CI does not pretend to lint any.
 ```bash
 anchor build 2>&1 | tee build.log
 grep -i "stack offset" build.log   # must be empty — anchor build exits 0 even when it isn't
-cargo test --workspace             # 162 tests: unit + doc + runtime
+cargo test --workspace             # 168 tests: unit + doc + runtime
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all -- --check
 ```
@@ -153,14 +153,14 @@ cargo fmt --all -- --check
 every state machine directly — including a differential check that fixed-point rounding
 never favours the user over the pool.
 
-**74 runtime tests** ([`tests/integration/`](./tests/integration)) execute the real BPF
+**80 runtime tests** ([`tests/integration/`](./tests/integration)) execute the real BPF
 programs against the real Token-2022 program via LiteSVM: the full authority chain (a
 passed, timelocked proposal moving treasury funds), the staking withdrawal paths, and a
 negative test for each attack in the [threat model](./docs/THREAT-MODEL.md) — direct
 treasury calls, pre-timelock execution, double execution, double voting, flash-staked
 voting, and substituted destinations.
 
-Of 55 documented invariants, **52 are verified, 3 untested** — tracked row by
+Of 57 documented invariants, **54 are verified, 3 untested** — tracked row by
 row in [INVARIANTS.md](./docs/INVARIANTS.md). That table is kept honest deliberately: a
 claim no test can falsify is documentation, not a guarantee.
 

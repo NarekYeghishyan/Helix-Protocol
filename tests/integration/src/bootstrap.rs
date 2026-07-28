@@ -362,7 +362,14 @@ impl System {
     /// hand and the wrong one for the fuzzer, whose clock also has to expire
     /// 30-to-180-day stake locks — see `fuzz::FUZZ_REALM_PARAMS`.
     pub fn set_realm_params(&mut self, params: RealmParams) {
-        self.env.send(
+        self.try_set_realm_params(params)
+            .unwrap_or_else(|e| panic!("set_realm_params failed: {e}"));
+    }
+
+    /// The same, returning the failure — for asserting that a superseded
+    /// authority has actually lost the power.
+    pub fn try_set_realm_params(&mut self, params: RealmParams) -> std::result::Result<(), String> {
+        self.env.try_send(
             &[TestEnv::ix(
                 helix_governance::ID,
                 helix_governance::accounts::UpdateRealmParams {
@@ -372,7 +379,40 @@ impl System {
                 helix_governance::instruction::UpdateRealmParams { params },
             )],
             &[],
-        );
+        )
+    }
+
+    fn realm_config_accounts(
+        &self,
+        proposal: Pubkey,
+    ) -> helix_governance::accounts::ExecuteRealmConfig {
+        helix_governance::accounts::ExecuteRealmConfig {
+            realm: self.realm,
+            proposal,
+            executor: self.executor,
+        }
+    }
+
+    pub fn execute_update_realm_params_ix(
+        &self,
+        proposal: Pubkey,
+    ) -> solana_instruction::Instruction {
+        TestEnv::ix(
+            helix_governance::ID,
+            self.realm_config_accounts(proposal),
+            helix_governance::instruction::ExecuteUpdateRealmParams {},
+        )
+    }
+
+    pub fn execute_set_realm_authority_ix(
+        &self,
+        proposal: Pubkey,
+    ) -> solana_instruction::Instruction {
+        TestEnv::ix(
+            helix_governance::ID,
+            self.realm_config_accounts(proposal),
+            helix_governance::instruction::ExecuteSetRealmAuthority {},
+        )
     }
 
     pub fn activate(&mut self, proposal: Pubkey) {

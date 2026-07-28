@@ -4,6 +4,7 @@ use anchor_lang::prelude::*;
 
 use crate::constants::{BPS_DENOMINATOR, EXECUTION_GRACE_PERIOD, MAX_TITLE_LEN, MAX_URI_LEN};
 use crate::errors::GovernanceError;
+use crate::instructions::realm::RealmParams;
 
 /// What a passed proposal actually does.
 ///
@@ -86,6 +87,20 @@ pub enum ProposalAction {
     /// Begin handing the admin role to someone else. The successor must still
     /// accept, so this alone transfers nothing.
     ProposeTokenAdmin { new_admin: Pubkey },
+
+    // ------------------------------------------------------------- the realm
+    //
+    // Governance retuning and re-owning itself. Without these two, `realm.authority`
+    // is set once at initialisation and is unreachable by any proposal — which
+    // makes the parameters that define what "passing" *means* the property of a
+    // key outside governance, permanently. See F-11.
+    /// Change quorum, approval, voting period, timelock or the proposal
+    /// threshold. Validated exactly as the direct instruction validates it.
+    UpdateRealmParams { params: RealmParams },
+
+    /// Hand `realm.authority` to a new holder — in practice the realm's own
+    /// executor PDA, which is the migration that makes the realm self-governing.
+    SetRealmAuthority { new_authority: Pubkey },
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize, InitSpace, Clone, Copy, PartialEq, Eq, Debug)]

@@ -147,6 +147,36 @@ and propose the admin onward — so nothing is stranded. That completeness was t
 [F-9](./SECURITY-ASSESSMENT.md#f-9--token-manager-admin-cannot-be-handed-to-governance):
 handing over the role without the powers would have been a fresh instance of the same bug.
 
+## 4b. Hand over the realm authority
+
+The realm is bootstrapped with a human `authority` so its parameters can be tuned during
+setup. Until this step runs, **that key can rewrite what "passing" means** — lower
+`quorum_bps` to the 0.01% floor and a dust position carries a treasury transfer. See
+[F-11](./SECURITY-ASSESSMENT.md#f-11--the-rules-of-governance-were-owned-from-outside-it),
+and `lowering_quorum_lets_a_dust_position_move_the_treasury`, which runs the attack.
+
+Treat it as the last configuration change, not an afterthought: after it, every further
+parameter change costs a voting period plus a timelock.
+
+```bash
+# 1. Settle on final parameters and set them directly, while that is still cheap.
+#    update_realm_params(quorum_bps, approval_bps, voting_period,
+#                        timelock_delay, min_weight_to_propose)
+
+# 2. Propose handing the authority to the realm's own executor PDA, and pass it.
+#    ProposalAction::SetRealmAuthority { new_authority: <executor PDA> }
+#    -> activate -> vote -> finalize -> queue -> (timelock) -> execute_set_realm_authority
+
+# 3. Confirm the old key is powerless.
+#    update_realm_params signed by the old authority must now fail with NotAuthority.
+```
+
+Point it at the **executor PDA specifically**. Any other address that cannot be made to
+sign would freeze the realm's configuration permanently — the F-8 defect one step further
+along. Parameters stay reachable afterwards through
+`ProposalAction::UpdateRealmParams`, which
+`governance_can_retune_its_own_parameters` covers.
+
 ## 5. Verify
 
 Do not skip. This is what catches F-1 and misconfiguration.
@@ -158,7 +188,12 @@ anchor idl fetch <PROGRAM_ID> --provider.cluster devnet   # IDL is published
 - [ ] HLX mint authority == `["mint_authority", config]` PDA, and **no keypair holds it**
 - [ ] `pool.authority` == realm executor PDA — set at init, so this should already hold
 - [ ] `treasury.governance_executor` == realm executor PDA — likewise
-- [ ] `realm.authority` == its own executor PDA, so parameter changes require a vote
+- [ ] `realm.authority` == its own executor PDA, so parameter changes require a vote.
+      **The single most important line in this list** — until it holds, everything below
+      it can be undone by one key changing the thresholds (F-11)
+- [ ] `realm.quorum_bps`, `approval_bps`, `voting_period`, `timelock_delay` and
+      `min_weight_to_propose` all match intent, checked *after* the handover rather than
+      before
 - [ ] `realm.guardian` == the intended multisig, and nothing else
 - [ ] `token_config.admin` == the realm executor PDA once step 4 completes, and
       `pending_admin` is cleared

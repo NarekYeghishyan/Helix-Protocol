@@ -8,11 +8,13 @@ use crate::constants::{
     MIN_TIMELOCK_DELAY, MIN_VOTING_PERIOD, REALM_SEED,
 };
 use crate::errors::GovernanceError;
-use crate::events::RealmInitialized;
+use crate::events::{RealmInitialized, RealmParamsUpdated};
 use crate::state::Realm;
 
 /// Parameters shared by realm creation and parameter updates.
-#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Debug)]
+/// Derives `InitSpace` because `ProposalAction::UpdateRealmParams` carries one,
+/// and a proposal's action is stored in the account.
+#[derive(AnchorSerialize, AnchorDeserialize, InitSpace, Clone, Copy, PartialEq, Eq, Debug)]
 pub struct RealmParams {
     pub quorum_bps: u16,
     pub approval_bps: u16,
@@ -146,6 +148,21 @@ pub fn update_realm_params(ctx: Context<UpdateRealmParams>, params: RealmParams)
     realm.voting_period = params.voting_period;
     realm.timelock_delay = params.timelock_delay;
     realm.min_weight_to_propose = params.min_weight_to_propose;
+
+    // Emitted with `by_proposal: false`, which is the point of the flag. Until
+    // `realm.authority` is migrated to the executor PDA, this instruction is a
+    // way to change what "passing" means without anything passing — and an
+    // observer watching the log should be able to tell the two apart. See F-11.
+    emit!(RealmParamsUpdated {
+        realm: realm.key(),
+        by_proposal: false,
+        quorum_bps: params.quorum_bps,
+        approval_bps: params.approval_bps,
+        voting_period: params.voting_period,
+        timelock_delay: params.timelock_delay,
+        min_weight_to_propose: params.min_weight_to_propose,
+        timestamp: Clock::get()?.unix_timestamp,
+    });
 
     Ok(())
 }

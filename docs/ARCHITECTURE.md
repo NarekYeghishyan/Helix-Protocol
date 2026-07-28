@@ -74,11 +74,20 @@ never iterates over the staker set.
 PRECISION = 1e12   (u128 fixed point)
 
 update_pool(now):
-    if total_weighted > 0:
-        elapsed  = now - last_update_ts
+    # Emissions never run past the funded period (INVARIANTS §3.7).
+    effective_now = min(now, reward_period_end)
+
+    if effective_now > last_update_ts and total_weighted > 0:
+        elapsed  = effective_now - last_update_ts
         emitted  = elapsed * reward_rate
         reward_per_token += (emitted * PRECISION) / total_weighted
-    last_update_ts = now
+        # The full `emitted`, not the truncated per-step distribution: a
+        # liability estimate must never be too low. See F-2.
+        total_rewards_accrued += emitted
+
+    # Guarded, so a stale clock cannot rewind the pool (INVARIANTS §3.6).
+    if now > last_update_ts:
+        last_update_ts = now
 
 earned(position):
     delta = reward_per_token - position.reward_per_token_paid
@@ -197,13 +206,44 @@ them would let whoever held the permission strand a proposal they disliked forev
   pool's total weight as it stood at `activate`, not as it stands now. Fixing the
   denominator is what makes the threshold mean something; the electorate gate above is
   what keeps the numerator describing the same set of stakers.
-- **Approval**: `for > against` and `for >= approval_bps` of (`for + against`).
-  Abstain counts toward quorum but not approval — the standard Compound/OZ semantics.
+- **Approval**: `for >= approval_bps` of (`for + against`). Abstain counts toward quorum
+  but not approval — the standard Compound/OZ semantics. `for > against` is *implied*
+  rather than separately checked, because `approval_bps` is floored at
+  `MIN_APPROVAL_BPS = 5_001` on both `initialize_realm` and `update_realm_params`. Worth
+  stating explicitly: that floor is the only thing standing between the current rule and
+  a realm that could pass proposals more people voted against than for.
 - **Timelock**: `Succeeded → Queued` sets `eta = now + timelock_delay`. Nothing
   executes before `eta`. This is the window in which users who dislike a passed
   proposal can exit, and the reason a timelock exists at all.
 - **Guardian**: may cancel any proposal before execution, and may not do anything else.
   A guardian that can also *pass* proposals is not a safety mechanism, it is an admin key.
+
+### Who owns the rules
+
+All five parameters above live on the realm and are changed by `update_realm_params`,
+which answers to `realm.authority`. That authority is therefore not a minor configuration
+role — it decides what *passing* means, and a low enough quorum makes passing trivial.
+
+Two `ProposalAction` variants keep it inside the system:
+
+- `UpdateRealmParams` — governance retunes itself, validated by exactly the same
+  `params.validate()` a direct caller passes through, so routing a change through a
+  proposal is not a way around the floors.
+- `SetRealmAuthority` — governance moves the authority, in practice to the realm's own
+  executor PDA, after which parameter changes cost a voting period and a timelock like
+  anything else.
+
+Both are needed. Revoking the authority without a way to retune would freeze the realm's
+configuration permanently, which is the F-8 defect wearing different clothes. Neither
+existed until [F-11](./SECURITY-ASSESSMENT.md#f-11--the-rules-of-governance-were-owned-from-outside-it),
+when the realm authority was unmovable and the rules of governance belonged to a key
+outside it.
+
+The realm is still *bootstrapped* with a human authority, because parameters need tuning
+before anyone depends on them. Migrating it is a step in
+[RUNBOOK.md](./RUNBOOK.md), and the post-deploy checklist asserts it — the same shape of
+mitigation F-1 gets, for the same reason: the risk lives in the deployment window, not in
+the program.
 
 `VoteRecord` PDAs (`["vote", proposal, position]`) make double-voting a
 `init`-constraint failure rather than a runtime check. Seeding by position rather than

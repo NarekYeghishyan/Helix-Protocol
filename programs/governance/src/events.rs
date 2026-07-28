@@ -103,3 +103,30 @@ pub struct ProposalCancelled {
     pub previous_state: ProposalState,
     pub timestamp: i64,
 }
+
+#[event]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RealmParamsUpdated {
+    pub realm: Pubkey,
+    /// Whether the change came through a proposal or from the realm authority
+    /// signing directly. Worth recording: before the authority is migrated these
+    /// are two very different events with the same effect.
+    pub by_proposal: bool,
+    pub quorum_bps: u16,
+    pub approval_bps: u16,
+    pub voting_period: i64,
+    pub timelock_delay: i64,
+    pub min_weight_to_propose: u64,
+    pub timestamp: i64,
+}
+
+#[event]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RealmAuthorityChanged {
+    pub realm: Pubkey,
+    pub previous_authority: Pubkey,
+    pub new_authority: Pubkey,
+    /// True once the realm's parameters answer only to the realm itself.
+    pub self_governing: bool,
+    pub timestamp: i64,
+}

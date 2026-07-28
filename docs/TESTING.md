@@ -10,7 +10,7 @@ is bounded by the honesty of its coverage claims.
 ```bash
 anchor build                                                  # required first — the
                                                               # runtime tests load .so files
-cargo test --workspace                                        # 162 tests: unit + doc + runtime
+cargo test --workspace                                        # 168 tests: unit + doc + runtime
 cargo test -p helix-staking --lib                             # one program's unit tests
 cargo test -p helix-staking --lib -- --nocapture rounding     # one test, with output
 
@@ -30,7 +30,7 @@ status code. See [F-3](./SECURITY-ASSESSMENT.md#f-3--sbf-stack-frame-overflow).
 
 ## What is covered
 
-**88 unit tests** over pure functions and state machines, and **74 runtime tests** against
+**88 unit tests** over pure functions and state machines, and **80 runtime tests** against
 the real BPF programs.
 
 ### Unit tests
@@ -64,6 +64,7 @@ the real BPF programs.
 | `token_admin_e2e.rs` | 7 | §5.2, §5.4, §5.9, §5.10 — the token-manager admin handover in real deployment order, and that governance then holds every admin power |
 | `compute_budget.rs` | 5 | §6.3 — compute measured across a 64× sweep in staker and voter count, plus a budget ceiling on every hot-path instruction |
 | `fuzz_invariants.rs` | 7 | §1.1–1.4, §3.1–3.2, §4.1, §4.3, §4.5–4.6 asserted after every operation of 22 random sequences, plus the tests that keep the campaign honest |
+| `realm_authority.rs` | 6 | §4.14, §4.15 — F-11: the realm's parameters reachable by proposal, the human authority revocable, and the attack that was possible before both |
 | `indexer_reconciliation.rs` | 7 | The [indexer's](../indexer) projection compared to on-chain accounts field by field, over the staking lifecycle, a fee-bearing mint, the governance lifecycle including nested CPI, replay, and partial history |
 
 ### Testing conventions worth copying

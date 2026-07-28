@@ -140,4 +140,16 @@ pub mod helix_governance {
     pub fn execute_revoke_minter(ctx: Context<ExecuteModifyMinter>) -> Result<()> {
         instructions::execute_token::execute_revoke_minter(ctx)
     }
+
+    /// Retunes the realm's own parameters — quorum, approval, periods,
+    /// proposal threshold — through a passed, timelocked proposal.
+    pub fn execute_update_realm_params(ctx: Context<ExecuteRealmConfig>) -> Result<()> {
+        instructions::execute_realm::execute_update_realm_params(ctx)
+    }
+
+    /// Moves `realm.authority`, in practice to the realm's own executor PDA.
+    /// This is the migration that makes the realm answer only to itself.
+    pub fn execute_set_realm_authority(ctx: Context<ExecuteRealmConfig>) -> Result<()> {
+        instructions::execute_realm::execute_set_realm_authority(ctx)
+    }
 }

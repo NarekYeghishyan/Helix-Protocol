@@ -15,7 +15,7 @@ An invariant with no test is a design intention, not a guarantee.
 
 Notation: `Σ` sums over all accounts of that type belonging to the pool/realm.
 
-**Current totals across 55 invariants: 52 ✅ · 0 ◐ · 3 ⬜.**
+**Current totals across 57 invariants: 54 ✅ · 0 ◐ · 3 ⬜.**
 
 Every user-facing flow is now exercised at runtime against the real BPF programs: staking
 deposit and withdrawal, reward accrual and claim, the full governance lifecycle, treasury
@@ -141,6 +141,8 @@ on-chain fixed-point result, asserting the on-chain value is never larger.
 | 4.9 | Abstentions count toward quorum but never toward approval | `abstentions_do_not_help_approval` | ✅ |
 | 4.10 | A queued proposal expires and cannot execute afterwards | `queued_proposals_expire`, and `ProposalExpired` reached by the fuzz campaign | ✅ |
 | 4.13 | Only positions that existed at activation may vote | `a_position_opened_after_the_snapshot_cannot_vote` | ✅ |
+| 4.14 | The realm's own parameters are reachable by proposal | `governance_can_retune_its_own_parameters` | ✅ |
+| 4.15 | A proposal cannot set parameters the direct instruction would refuse | `a_proposal_cannot_set_parameters_the_validator_refuses` | ✅ |
 
 4.7 has two halves and both are now tested: `the_guardian_veto_prevents_execution` covers
 the veto itself, and `the_guardian_cannot_do_anything_but_cancel` attempts the other
@@ -216,7 +218,7 @@ a 31-CU residual it bounds but does not explain.
 
 ```bash
 anchor build 2>&1 | tee build.log && grep -i "stack offset" build.log  # must be empty
-cargo test --workspace          # 162 tests: unit + doc + runtime
+cargo test --workspace          # 168 tests: unit + doc + runtime
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 

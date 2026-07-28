@@ -24,7 +24,7 @@ says how much to trust each one.
 | 4 | Indexer + analytics API | ◐ Decode and projection built and reconciled against the chain; ingestion and storage not started |
 | 5 | Dashboard + wallet integration | ⬜ Not started |
 | 6 | Fuzzing + external audit prep | ✅ Done — compute benchmarked, fuzzing found F-10, audit scoped in [AUDIT-READINESS.md](./AUDIT-READINESS.md) |
-| 7 | Governance migration (burn the admin keys) | ⬜ Not started |
+| 7 | Governance migration (burn the admin keys) | ◐ 7.1 and 7.2 reachable and tested — F-11 fixed; 7.3 needs a deployment |
 
 ---
 
@@ -228,11 +228,23 @@ first campaign already returned a High.
 
 The point of the whole design, and easy to leave undone forever.
 
-| Milestone | Deliverable | Est. |
-|---|---|---|
-| 7.1 | Realm authority → the realm's own executor PDA, so parameter changes need a vote | 0.5d |
-| 7.2 | Token-manager admin → governance | 0.5d |
-| 7.3 | Program upgrade authority → governance, or burned | 1d |
+| Milestone | Deliverable | Est. | Status |
+|---|---|---|---|
+| 7.1 | Realm authority → the realm's own executor PDA, so parameter changes need a vote | 0.5d | ✅ Reachable and tested; the migration itself runs at deploy |
+| 7.2 | Token-manager admin → governance | 0.5d | ✅ Reachable and tested (F-9) |
+| 7.3 | Program upgrade authority → governance, or burned | 1d | ⬜ Needs a deployment |
+
+**7.1 was not a migration, it was a missing instruction.** The realm authority could not
+be moved at all: `update_realm_params` is gated on `realm.authority`, and no
+`ProposalAction` produced that signature. So the parameters defining what "passing" means
+belonged permanently to whoever initialised the realm — and lowering quorum to the 0.01%
+floor turns a dust position into a treasury transfer.
+[F-11](./SECURITY-ASSESSMENT.md#f-11--the-rules-of-governance-were-owned-from-outside-it),
+High, fixed with `UpdateRealmParams` and `SetRealmAuthority`.
+
+7.1 and 7.2 are now *possible* and proven by runtime tests. Neither is *done* in the sense
+that matters, because both migrate an authority on a chain nothing is deployed to. The
+runbook runs them; the post-deploy checklist asserts the result.
 
 Until 7.3, "decentralised" is aspirational: whoever holds the upgrade authority can
 replace every guarantee in this repository. An unmigrated upgrade authority is the most
