@@ -127,8 +127,12 @@ jobs:
             exit 1
           fi
 
-      - name: Rust unit tests
-        run: cargo test --workspace --lib
+      # The full suite, not `--lib`. `--lib` silently skips doctests, and the
+      # program READMEs are pulled in with `#![doc = include_str!(..)]` — so a
+      # broken code fence in a README is a real compile failure that `--lib`
+      # hides. It also picks up the integration tests under tests/integration.
+      - name: Rust tests (unit + doc + integration)
+        run: cargo test --workspace
 
       # Integration tests are ROADMAP Phase 2 and do not exist yet, so `anchor test`
       # is deliberately not run — it would fail on an empty test glob, and stubbing it

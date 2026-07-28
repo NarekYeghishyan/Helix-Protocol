@@ -106,7 +106,7 @@ Severity = impact × likelihood, CVSS-style but judged rather than computed.
 | F-1 | Initialisers are front-runnable | **Medium** | Open — mitigated operationally |
 | F-2 | `unpaid_liability` used deposits as liability, making any non-zero reward rate unsettable | **High** | **Fixed** |
 | F-3 | SBF stack frame overflow in three `Accounts` structs | **High** | **Fixed** |
-| F-4 | Cross-program flows unverified at runtime | **High** | Open — Phase 2 |
+| F-4 | Cross-program flows unverified at runtime | **High** | Partially resolved — staking + Token-2022 verified; governance/treasury open |
 | F-5 | Upgrade authority not migrated to governance | **Critical** (if deployed) | Open — Phase 7 |
 | F-6 | Guardian key compromise causes governance denial of service | **Low** | Accepted |
 | F-7 | `Position` accounts are never closed | **Informational** | Open |
@@ -179,17 +179,22 @@ The dangerous part is the failure mode: `anchor build` prints these as `Error:` 
 runtime. Fixed by boxing the large accounts. CI now greps the build log for
 `stack offset` rather than trusting the exit code.
 
-### F-4 — Cross-program flows unverified at runtime *(High, open)*
+### F-4 — Cross-program flows unverified at runtime *(High, partially resolved)*
 
-Reward maths, vesting schedules, tally arithmetic and every state machine are
-unit-tested. The CPI paths — executor PDA signing a treasury spend, the lock gate
-rejecting a real position, fee-bearing mints crediting a delta — are proven to *compile
-and type-check* only.
+**Resolved:** the staking deposit path and the Token-2022 fee invariants (§1.1, §1.3,
+§2.1–§2.3) now run against real BPF programs and a real fee-bearing mint under LiteSVM.
 
-Invariant §2.1 is the sharpest instance: on a plain SPL mint, crediting the vault delta
-and crediting `amount` are identical, so **every current test would pass either way**.
-Until the suite runs against a transfer-fee mint, §2.1 is a property of the source, not
-an observed fact. Phase 2 of the roadmap exists for this and is the top priority.
+This was the sharpest instance of the finding, and worth recording why. On a plain SPL
+mint, crediting the vault delta and crediting `amount` produce identical results, so the
+entire 65-test unit suite passed either way — the correct behaviour could have been
+deleted silently. Mutation testing confirmed the new tests have teeth: injecting the bug
+fails three of them with a 30,000-unit shortfall between positions and vault, while the
+plain-mint test stays green.
+
+**Still open:** governance and treasury runtime flows. Specifically, *"the executor PDA
+can sign a treasury spend, and nothing else can"* — the central claim of
+[§1 Authority reachability](#authority-reachability) — is still established by reading the
+constraints, not by executing them. That is now the highest-priority gap (Phase 2.4).
 
 ### F-5 — Upgrade authority not migrated *(Critical if deployed, open)*
 
@@ -223,7 +228,7 @@ reachable either way. Purely a cost and hygiene matter.
 | Governance capture via borrowed stake | Very low | Critical | Medium | Lock gate — see [A1](./THREAT-MODEL.md#a1--flash-loan-governance-capture) |
 | Governance capture via genuine majority | Low | Critical | **High** | Not preventable — timelock, spend cap, veto bound the damage |
 | Treasury drained outside governance | Very low | Critical | Medium | Single-signer `has_one` on the executor PDA |
-| Token-2022 fee accounting error | Medium | High | **High** | Vault-delta crediting; **unverified at runtime** (F-4) |
+| Token-2022 fee accounting error | Low | High | Medium | Vault-delta crediting, **verified at runtime and mutation-tested** (F-4) |
 | Compute exhaustion at scale | Very low | High | Low | No unbounded iteration; **unbenchmarked** |
 | Arithmetic overflow | Very low | High | Low | `checked_*` everywhere + `overflow-checks = true` |
 | Operator error at deployment | **Medium** | High | **High** | F-1 mitigations + runbook verification steps |

@@ -8,9 +8,10 @@ Rust with the Anchor framework.
 [![Solana](https://img.shields.io/badge/solana-3.x-purple)](https://solana.com)
 [![License](https://img.shields.io/badge/license-Apache--2.0-green)](./LICENSE)
 
-> **Status: unaudited. Not deployed.** All four programs build to BPF and pass their
-> unit suites locally. Integration tests, the analytics stack and a devnet deployment
-> are scoped in [ROADMAP.md](./docs/ROADMAP.md). Nothing here has held real value.
+> **Status: unaudited. Not deployed.** All four programs build to BPF and pass 71 tests
+> locally, including runtime tests against a real Token-2022 mint with transfer fees.
+> Governance/treasury runtime coverage, the analytics stack and a devnet deployment are
+> scoped in [ROADMAP.md](./docs/ROADMAP.md). Nothing here has held real value.
 > See [SECURITY.md](./SECURITY.md).
 
 Four programs that compose into one system. Nothing here wraps an existing protocol —
@@ -62,11 +63,15 @@ block, and it costs one comparison rather than a history of balance checkpoints.
 [`governance/src/instructions/vote.rs`](./programs/governance/src/instructions/vote.rs),
 [threat model](./docs/THREAT-MODEL.md#a1--flash-loan-governance-capture).
 
-**Token-2022 transfer fees are accounted for.** When a mint carries the transfer-fee
-extension, the amount sent is not the amount that arrives. Every deposit path credits
-the *observed vault balance delta*, never the `amount` argument — crediting `amount`
-breaks solvency immediately and lets deposit/withdraw cycles drain the pool. Invisible
-on a plain SPL mint, which is why it gets missed. → [`staking/src/instructions/stake.rs`](./programs/staking/src/instructions/stake.rs),
+**Token-2022 transfer fees are accounted for — and proven so.** When a mint carries the
+transfer-fee extension, the amount sent is not the amount that arrives. Every deposit path
+credits the *observed vault balance delta*, never the `amount` argument.
+
+This is invisible on a plain SPL mint, where the two are identical — so the whole unit
+suite passes either way. It is verified by running the staking flow against a real
+fee-bearing mint, and that test was **mutation-tested**: reverting the fix produces a
+30,000-unit shortfall between positions and vault, while the plain-mint test stays green.
+→ [`staking_transfer_fee.rs`](./tests/integration/tests/staking_transfer_fee.rs),
 [invariants](./docs/INVARIANTS.md#2-token-2022-transfer-fees).
 
 ## Documentation
@@ -117,19 +122,21 @@ docs/              the five deliverables above
 ## Testing
 
 ```bash
-cargo test --workspace --lib    # 65 unit tests: math, state machines, boundaries
-cargo clippy --workspace --all-targets -- -D warnings
-cargo fmt --all -- --check
 anchor build 2>&1 | tee build.log
 grep -i "stack offset" build.log   # must be empty — anchor build exits 0 even when it isn't
+cargo test --workspace             # 71 tests: unit + doc + integration
+cargo clippy --workspace --all-targets -- -D warnings
+cargo fmt --all -- --check
 ```
 
-Current coverage is **unit-level**: the reward accumulator, the vesting schedule, the
-tally arithmetic and every state machine are tested directly, including a differential
-check that fixed-point rounding never favours the user over the pool. Cross-program
-wiring is proven to compile and type-check, but is **not yet proven at runtime** —
-integration tests against a validator are the top roadmap item. See
-[TESTING.md](./docs/TESTING.md) for what is and is not covered.
+**65 unit tests** cover the reward accumulator, vesting schedule, tally arithmetic and
+every state machine directly — including a differential check that fixed-point rounding
+never favours the user over the pool. **6 runtime tests** ([`tests/integration/`](./tests/integration))
+exercise the real BPF programs against the real Token-2022 program via LiteSVM.
+
+Governance and treasury runtime flows are **not yet covered** — the executor PDA signing a
+treasury spend is still proven only to type-check. See [TESTING.md](./docs/TESTING.md) for
+the full list of what is and is not covered; it is kept honest deliberately.
 
 ## License
 

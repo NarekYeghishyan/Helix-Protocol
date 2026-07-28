@@ -49,11 +49,11 @@ from.
 Every deposit credits the **observed vault balance delta**, never the `amount`
 argument:
 
-```rust
+```text
 let before = vault.amount;
 transfer_checked(..., amount, decimals)?;
 vault.reload()?;
-let credited = vault.amount - before;
+let credited = vault.amount - before;      // never `amount`
 ```
 
 With a transfer-fee extension active the vault receives `amount - fee`. Crediting

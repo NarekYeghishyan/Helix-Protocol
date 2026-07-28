@@ -15,12 +15,16 @@ An invariant with no test is a design intention, not a guarantee.
 
 Notation: `Σ` sums over all accounts of that type belonging to the pool/realm.
 
-**Current totals across 46 invariants: 22 ✅ · 6 ◐ · 18 ⬜.**
+**Current totals across 46 invariants: 26 ✅ · 7 ◐ · 13 ⬜.**
 
-The gap is not randomly distributed. Everything provable from pure functions is proven;
-everything requiring real accounts, real CPIs or a real Token-2022 mint is not. That is
-precisely the boundary of what unit tests can reach, which is why integration tests are
-Phase 2 and everything else waits behind them.
+The remaining gap is concentrated in governance and treasury runtime flows. The
+Token-2022 fee invariants (§2) are now verified against a real fee-bearing mint, which
+closes what was the most dangerous gap.
+
+Those tests were **mutation-tested**: reverting the fix so that deposits credit the
+`amount` argument instead of the vault delta makes three of them fail, reporting a
+30,000-unit shortfall between positions and vault. The plain-mint test still passes under
+that mutation, which is precisely why unit tests alone could never have caught it.
 
 ---
 
@@ -28,10 +32,10 @@ Phase 2 and everything else waits behind them.
 
 | # | Invariant | Test | Status |
 |---|-----------|------|--------|
-| 1.1 | `Σ position.amount == stake_vault.amount` | `staking::solvency_stake_vault` | ⬜ P2 |
+| 1.1 | `Σ position.amount == stake_vault.amount` | `fee_bearing_mint_preserves_vault_solvency` | ✅ |
 | 1.2 | `Σ (position.pending + earned(position)) <= reward_vault.amount` | `liability_is_never_understated` | ◐ |
-| 1.3 | `pool.total_staked == Σ position.amount` | `staking::total_staked_matches` | ⬜ P2 |
-| 1.4 | `pool.total_weighted == Σ position.weighted_amount` | `staking::total_weighted_matches` | ⬜ P2 |
+| 1.3 | `pool.total_staked == Σ position.amount` | `fee_bearing_mint_preserves_vault_solvency` | ✅ |
+| 1.4 | `pool.total_weighted == Σ position.weighted_amount` | `weighted_amount_is_derived_from_the_credited_amount` | ◐ |
 | 1.5 | `Σ stream.claimed <= Σ stream.total_amount` | `outstanding_tracks_the_unclaimed_remainder` | ◐ |
 | 1.6 | `Σ (stream.total_amount - stream.claimed) <= treasury_vault.amount` | `uncommitted_excludes_stream_obligations` | ◐ |
 
@@ -49,18 +53,24 @@ debt by the retained rounding dust — a liability estimate must never be too lo
 
 | # | Invariant | Test | Status |
 |---|-----------|------|--------|
-| 2.1 | Credited stake == observed vault balance delta, never the `amount` argument | `staking::fee_mint_credits_delta` | ⬜ **P2.3** |
-| 2.2 | Depositing `n` into a fee-bearing mint credits `< n`, and 1.1 still holds | `staking::fee_mint_preserves_solvency` | ⬜ **P2.3** |
+| 2.1 | Credited stake == observed vault balance delta, never the `amount` argument | `fee_bearing_mint_credits_the_delta_not_the_argument` | ✅ |
+| 2.2 | Depositing `n` into a fee-bearing mint credits `< n`, and 1.1 still holds | `fee_bearing_mint_preserves_vault_solvency` | ✅ |
+| 2.3 | Weight is derived from the credited amount, not the argument | `weighted_amount_is_derived_from_the_credited_amount` | ✅ |
 
 If the mint carries a transfer-fee extension, `transfer_checked` moves `amount` but the
 vault receives `amount - fee`. Crediting `amount` breaks 1.1 immediately and lets the pool
 be drained by repeated deposit/withdraw cycles. Every deposit path reads the vault balance
 before and after and credits the difference.
 
-**This is the single most important untested invariant.** On a plain SPL mint the delta and
-the argument are identical, so *every current test would pass either way* — the correct
-behaviour could be removed and nothing would go red. Until the suite runs against a
-fee-bearing mint, 2.1 is a property of the source, not an observed fact.
+**Verified against a real fee-bearing mint** in
+[`staking_transfer_fee.rs`](../tests/integration/tests/staking_transfer_fee.rs), which
+runs the same flow twice — once on a plain mint, once on a mint with a 1% transfer fee —
+and asserts the difference.
+
+This was the most dangerous invariant in the project precisely because it looked covered.
+On a plain SPL mint the delta and the argument are identical, so the entire unit suite
+passes either way. The mutation test confirms it: injecting the bug fails three
+integration tests but leaves the plain-mint test green.
 
 ## 3. Reward accounting
 
@@ -145,10 +155,15 @@ deserialisation especially.
 ## Running the suite
 
 ```bash
-cargo test --workspace --lib     # 65 unit tests — everything marked ✅ above
+anchor build 2>&1 | tee build.log && grep -i "stack offset" build.log  # must be empty
+cargo test --workspace          # 71 tests: unit + doc + integration
 cargo clippy --workspace --all-targets -- -D warnings
-anchor build 2>&1 | tee build.log && grep -i "stack offset" build.log   # must be empty
 ```
 
-Integration and fuzz suites do not exist yet. See [TESTING.md](./TESTING.md) for the
-planned design and [ROADMAP.md](./ROADMAP.md) for sequencing.
+Use `cargo test --workspace`, not `--lib`. The `--lib` filter skips doctests, and the
+program READMEs are compiled via `#![doc = include_str!(..)]` — a broken code fence there
+is a real failure that `--lib` hides. Integration tests need `anchor build` to have run
+first, since they load the `.so` binaries.
+
+Governance and treasury runtime flows, and the fuzz suite, do not exist yet. See
+[TESTING.md](./TESTING.md) and [ROADMAP.md](./ROADMAP.md).

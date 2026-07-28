@@ -19,7 +19,7 @@ says how much to trust each one.
 |-------|-------|--------|
 | 0 | Toolchain, workspace, CI | ✅ Done |
 | 1 | Four programs, unit-tested | ✅ Done |
-| 2 | Integration tests against a validator | ⬜ Not started — **highest priority** |
+| 2 | Integration tests against a validator | 🟡 In progress — staking + Token-2022 fees done; governance/treasury remain |
 | 3 | Devnet deployment + verifiable builds | ⬜ Not started |
 | 4 | Indexer + analytics API | ⬜ Not started |
 | 5 | Dashboard + wallet integration | ⬜ Not started |
@@ -50,20 +50,24 @@ programs creates confidence that the system does not yet deserve.
 
 The top priority. Everything after this depends on it.
 
-| Milestone | Deliverable | Est. |
-|---|---|---|
-| 2.1 | Harness: LiteSVM/Surfpool fixtures, mint + pool + realm + treasury setup helpers | 1d |
-| 2.2 | Staking happy path and boundaries: stake → accrue → claim → unlock → unstake | 1d |
-| 2.3 | **Fee-bearing mint path** — the whole suite re-run against a Token-2022 mint with the transfer-fee extension enabled | 1d |
-| 2.4 | Governance end-to-end: create → activate → vote → finalize → queue → execute, incl. a treasury spend actually landing | 1–2d |
-| 2.5 | Negative tests: the attacks in [THREAT-MODEL.md](./THREAT-MODEL.md) must each fail | 1d |
+| Milestone | Deliverable | Est. | Status |
+|---|---|---|---|
+| 2.1 | Harness: LiteSVM fixtures, mint/token-account/clock-warp helpers, PDA derivations | 1d | ✅ Done |
+| 2.2 | Staking deposit path and weight derivation | 1d | ✅ Done |
+| 2.3 | **Fee-bearing mint path** — staking re-run against a Token-2022 transfer-fee mint | 1d | ✅ Done |
+| 2.2b | Staking lifecycle: accrue → claim → unlock → unstake, with clock warping | 1d | ⬜ |
+| 2.4 | Governance end-to-end: create → activate → vote → finalize → queue → execute, incl. a treasury spend actually landing | 1–2d | ⬜ |
+| 2.5 | Negative tests: the attacks in [THREAT-MODEL.md](./THREAT-MODEL.md) must each fail | 1d | ⬜ |
 
-**2.3 is the one that matters most.** The programs credit the observed vault delta
-rather than the `amount` argument, which is the correct behaviour — but on a plain SPL
-mint the two are identical, so *every current test would pass either way*. Until the
-suite runs against a fee-bearing mint, invariant §2.1 is a claim about the code, not a
-verified property. This is the single biggest gap between what the docs assert and what
-is proven.
+**2.3 was the one that mattered most, and it is done.** The programs credit the observed
+vault delta rather than the `amount` argument — correct, but on a plain SPL mint the two
+are identical, so every unit test passed either way. It is now verified against a real
+fee-bearing mint and mutation-tested: injecting the bug fails three tests with a
+30,000-unit vault shortfall, while the plain-mint test stays green.
+
+**2.4 is now the largest remaining gap.** "The executor PDA can sign a treasury spend" is
+the single most important claim in the architecture, and it is still proven only to
+type-check.
 
 **2.5 defines "done" for security work.** A threat model whose defences have no failing
 test is a document, not a control.

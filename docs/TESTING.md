@@ -74,45 +74,51 @@ Read this section before trusting anything above.
 
 | Gap | Consequence | Fix |
 |---|---|---|
-| **No integration tests** | Every CPI path is proven to compile, not to run | [ROADMAP](./ROADMAP.md) Phase 2 |
-| **No fee-bearing mint test** | Invariant §2.1 is unverified — see below | Phase 2.3 |
-| No test of PDA signing | "Executor PDA can sign a treasury spend" is an assumption | Phase 2.4 |
-| No negative/attack tests | The threat model's defences have no failing test | Phase 2.5 |
+| No governance runtime tests | Proposal lifecycle, quorum and timelock unexercised end to end | [ROADMAP](./ROADMAP.md) Phase 2.4 |
+| No test of the executor PDA signing a treasury spend | The core authority claim is still an assumption | Phase 2.4 |
+| No negative/attack tests | The threat model's defences have no *failing* test | Phase 2.5 |
+| No vesting runtime tests | Claim and revoke arithmetic is unit-tested; the token movement is not | Phase 2.4 |
 | No compute benchmarks | Invariant §6.3 is argued from code structure, not measured | Phase 6 |
 | No fuzzing | Only hand-chosen inputs have been tried | Phase 6 |
-| No multi-position or multi-staker runtime scenarios | Aggregate invariants (§1.1, §1.3, §1.4) are unchecked against real accounts | Phase 2 |
+| `Σ position.weighted_amount` across many positions | §1.4 checked for one position, not an aggregate | Phase 2.4 |
 
-### The most important gap
+Staking's deposit path and the Token-2022 fee invariants (§1.1, §1.3, §2.1–§2.3) are now
+covered — see below.
 
-**Invariant §2.1 — crediting the observed vault delta rather than the `amount`
-argument — is currently unverifiable by the existing suite.**
-
-On a plain SPL mint the delta and the amount are identical. So every current test passes
-whether the code credits the delta or the argument. The implementation is correct, and
-that correctness is presently a property of the source that no test would notice being
-removed.
-
-Only running the full staking flow against a Token-2022 mint with the transfer-fee
-extension enabled turns §2.1 into an observed fact. Until then it is a claim.
-
-## Planned integration test design
+## Integration tests
 
 ```bash
-# Not yet implemented — Phase 2
-cargo test --test integration          # LiteSVM, fast
-anchor test                            # Surfpool, real Token-2022 extensions
+anchor build            # required — the tests load target/deploy/*.so
+cargo test --workspace
 ```
 
-**LiteSVM** for the bulk of it: in-process, millisecond runs, direct clock control.
-**Surfpool** for anything touching real Token-2022 extension behaviour, where a faithful
-token program matters more than speed.
+Runtime tests live in [`tests/integration/`](../tests/integration) and run against
+**LiteSVM**: the real BPF programs and the real Token-2022 program, in-process, in
+milliseconds. `TestEnv` provides mint creation with extensions, token accounts, clock
+warping, and PDA derivations mirroring each program's seeds.
 
-Fixtures should build the whole wired system — mint, pool, realm, treasury, authorities
-handed over — because the wiring is exactly what is untested. A fixture that stops short
-of the handover tests the parts that already work.
+Staking tests are parameterised over `[plain_mint, fee_bearing_mint]` — as a parameter
+rather than a separate suite, because a separate suite drifts.
 
-Every test that exercises staking must be parameterised over `[plain_mint,
-fee_bearing_mint]`. Not a separate suite, a parameter — a separate suite drifts.
+### Mutation testing, and why it is the real check
+
+A passing test proves nothing until you know it would fail on the bug it claims to catch.
+The transfer-fee tests were verified by reverting the fix — crediting `amount` instead of
+the vault delta — rebuilding, and confirming they go red:
+
+```text
+fee_bearing_mint_credits_the_delta_not_the_argument  FAILED
+  position credited 1000000 but vault received 990000
+fee_bearing_mint_preserves_vault_solvency            FAILED
+  sum of positions (3000000) does not match vault (2970000)
+weighted_amount_is_derived_from_the_credited_amount  FAILED
+plain_mint_credits_the_full_amount                   ok      <-- still passes
+```
+
+The last line is the important one. Under the same mutation the plain-mint test stays
+green, which is the entire argument for why unit tests could never have caught this class
+of bug. Worth repeating for any invariant that matters: **inject the failure and watch the
+test catch it.**
 
 ## CI
 
