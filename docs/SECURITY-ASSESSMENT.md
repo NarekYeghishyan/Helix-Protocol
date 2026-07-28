@@ -113,7 +113,9 @@ Severity = impact × likelihood, CVSS-style but judged rather than computed.
 | F-8 | Vesting, spend-cap and executor-migration instructions are unreachable | **Medium** | **Fixed** — found by attempting to test them |
 | F-9 | Token-manager admin cannot be handed to governance | **Low** | **Fixed** — same class as F-8 |
 
-### F-1 — Initialisers are front-runnable *(Medium, open)*
+### F-1 — Initialisers are front-runnable
+
+**Severity:** Medium · **Status:** open
 
 `initialize_pool`, `initialize_realm` and `initialize_treasury` each create a PDA seeded
 by mints or by the pool, and take the privileged party (`authority`, `guardian`,
@@ -163,7 +165,9 @@ Severity stays Medium: the window is short, the exploit immediately visible, and
 funds exist at that point. (2) remains the stronger fix and is worth taking on any
 redeploy.
 
-### F-2 — Reward liability computed from deposits *(High, fixed)*
+### F-2 — Reward liability computed from deposits
+
+**Severity:** High · **Status:** fixed
 
 `Pool::unpaid_liability` returned `total_rewards_funded - total_rewards_paid`. Because
 the reward vault balance is *itself* approximately `funded - paid`, the solvency guard in
@@ -191,7 +195,9 @@ full `emitted` amount, over-stating debt by the retained dust. Regression tests:
 and both were correct. The defect lived in their *composition*. Tests should assert the
 predicate a handler actually evaluates, not just its inputs.
 
-### F-3 — SBF stack frame overflow *(High, fixed)*
+### F-3 — SBF stack frame overflow
+
+**Severity:** High · **Status:** fixed
 
 `Stake`, `Unstake` and `ClaimStream` generated `try_accounts` frames of 4104–4336 bytes
 against a 4096-byte SBF limit. Anchor deserialises every account in a struct into one
@@ -203,7 +209,9 @@ The dangerous part is the failure mode: `anchor build` prints these as `Error:` 
 runtime. Fixed by boxing the large accounts. CI now greps the build log for
 `stack offset` rather than trusting the exit code.
 
-### F-4 — Cross-program flows unverified at runtime *(High, partially resolved)*
+### F-4 — Cross-program flows unverified at runtime
+
+**Severity:** High · **Status:** partially resolved
 
 **Resolved:** the staking deposit path and the Token-2022 fee invariants (§1.1, §1.3,
 §2.1–§2.3) now run against real BPF programs and a real fee-bearing mint under LiteSVM.
@@ -231,7 +239,9 @@ vesting token movement. Both are arithmetic that is unit-tested; what is unverif
 token transfer and account-state bookkeeping around it. Lower risk than what was closed,
 but not zero — `claim` and `unstake` are the paths users depend on to exit.
 
-### F-5 — Upgrade authority not migrated *(Critical if deployed, open)*
+### F-5 — Upgrade authority not migrated
+
+**Severity:** Critical if deployed · **Status:** open
 
 Nothing is deployed, so this is currently theoretical. It becomes the dominant risk the
 moment it is: whoever holds the upgrade authority can replace every guarantee in this
@@ -239,14 +249,18 @@ assessment. An unmigrated upgrade authority is the most common gap between "audi
 "actually safe". Phase 7; [RUNBOOK.md](./RUNBOOK.md) treats it as an explicit,
 verifiable step.
 
-### F-6 — Guardian denial of service *(Low, accepted)*
+### F-6 — Guardian denial of service
+
+**Severity:** Low · **Status:** accepted
 
 A compromised guardian can veto every proposal indefinitely, freezing governance. It
 cannot cause anything to happen — only prevent it. Accepted as the deliberate cost of
 having a veto at all; mitigated by holding the guardian key in a multisig and by the
 realm's ability to vote in a new one, provided a proposal can pass first.
 
-### F-8 — Governance-gated treasury instructions are unreachable *(Medium, fixed)*
+### F-8 — Governance-gated treasury instructions are unreachable
+
+**Severity:** Medium · **Status:** fixed
 
 Four treasury instructions require a signature from `governance_executor`:
 
@@ -302,7 +316,9 @@ correct id is the treasury's `stream_count` at *execution* time and is not knowa
 the proposal is written. It is supplied as an execution argument and validated by the
 treasury against its own counter, so a caller cannot choose an arbitrary slot.
 
-### F-9 — Token-manager admin cannot be handed to governance *(Low, fixed)*
+### F-9 — Token-manager admin cannot be handed to governance
+
+**Severity:** Low · **Status:** fixed
 
 The same shape as F-8, found the same way — by writing the deployment sequence down and
 noticing a step that cannot be performed.
@@ -348,7 +364,9 @@ test suite asks:
 2. When an authority is transferred, does the recipient also gain every power that
    authority carries?
 
-### F-7 — Position accounts never closed *(Informational, open)*
+### F-7 — Position accounts never closed
+
+**Severity:** Informational · **Status:** open
 
 Fully exiting a position leaves the account allocated and its rent unreclaimed. No
 security impact — Anchor's `close` would zero the discriminator, and re-initialising the
@@ -380,8 +398,10 @@ and worth saying because it is where review attention usually is not.
 1. **Integration tests, fee-bearing mint first** (F-4). Nothing else should ship before
    this; several claims in this document depend on it.
 2. **Atomic bootstrap + post-deploy authority verification** (F-1).
-3. **Compute-unit benchmarks** against staker count, to measure invariant §6.3 rather
-   than argue it from code structure.
+3. ~~**Compute-unit benchmarks** against staker count, to measure invariant §6.3 rather
+   than argue it from code structure.~~ Done — see
+   [TESTING.md](./TESTING.md#compute-cost). No instruction's cost grows with the staker or
+   voter set, and the worst uses 17.9% of the default budget.
 4. **Trident fuzzing** with the invariant set as the oracle.
 5. **Migrate upgrade authority to governance** (F-5), and verify it.
 6. **External audit** once 1–5 are done. Commissioning one before integration tests

@@ -200,10 +200,17 @@ inputs to a predicate rather than the predicate.
 drift, and they can only be checked against actual accounts. Unit tests cannot reach them.
 So the invariants that matter most are precisely the ones with no test.
 
-**W-5 — Compute claims are argued, not measured.** §6.3 asserts flat compute against
-staker count. That follows from the absence of loops, and I believe it, but "follows from
-reading the code" is a weaker claim than a benchmark, and CU consumption has non-obvious
-contributors — account deserialisation especially.
+**W-5 — Compute claims were argued, not measured. Now measured.** §6.3 asserted flat
+compute against staker count, which followed from the absence of loops. That is a weaker
+claim than a benchmark, and CU consumption has non-obvious contributors. Benchmarked in
+[`compute_budget.rs`](../tests/integration/tests/compute_budget.rs): the claim holds, with
+one qualification the code reading would not have produced. `claim` and `unstake` move
+slightly with the *magnitude* of the accumulated fixed-point values, because SBF has no
+native `u128` arithmetic and the software routines LLVM emits cost more on wider operands.
+Reaching the same staked total with 64 stakers or with one costs bit-identical compute, so
+the count genuinely is not a variable — but "flat" was the wrong word for what is really
+"logarithmic in staked value, constant in staker count". See
+[TESTING.md](./TESTING.md#compute-cost).
 
 **W-6 — Token metadata is not initialised.** The mint is Token-2022 but has no on-chain
 name or symbol, needing the metadata extension CPI plus a realloc for variable-length
@@ -232,8 +239,12 @@ grows with usage — the pattern that most often forces a painful migration late
 **The honest headline:** the pool account is the throughput ceiling, and that is a
 deliberate trade. A shared accumulator is what buys O(1) distribution; the cost is that
 every position change touches one account. For a staking protocol this is the right side
-of the trade — stake operations are not high-frequency — but it should be a known number
-before mainnet, and it is not measured yet.
+of the trade — stake operations are not high-frequency.
+
+Compute is no longer the constraint to worry about there: the busiest instruction in the
+system uses 17.9% of the default per-instruction budget, and none of them grow with the
+staker set. What remains unmeasured is *write contention* on the pool account under
+concurrent load, which needs a real validator rather than an in-process runtime — Phase 3.
 
 ### Improvement opportunities
 

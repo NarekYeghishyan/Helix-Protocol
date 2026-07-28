@@ -15,7 +15,7 @@ An invariant with no test is a design intention, not a guarantee.
 
 Notation: `Σ` sums over all accounts of that type belonging to the pool/realm.
 
-**Current totals across 54 invariants: 48 ✅ · 2 ◐ · 4 ⬜.**
+**Current totals across 54 invariants: 49 ✅ · 2 ◐ · 3 ⬜.**
 
 Every user-facing flow is now exercised at runtime against the real BPF programs: staking
 deposit and withdrawal, reward accrual and claim, the full governance lifecycle, treasury
@@ -47,8 +47,8 @@ The same defect appeared again in the token-manager
 and fixing it nearly produced a third instance — granting the realm the admin role without
 the admin's *powers*. §5.10 exists to pin that down.
 
-What remains ⬜ is compute benchmarking (§6.3), the deployment-time invariant §5.8, and
-two aggregate properties that need many accounts to be meaningful — all Phase 3 or 6.
+What remains ⬜ is the deployment-time invariant §5.8 and two aggregate properties that
+need many accounts to be meaningful — Phase 3 and Phase 6 respectively.
 
 ---
 
@@ -155,7 +155,7 @@ instruction. A runtime test attempting every other instruction as guardian would
 |---|-----------|------|--------|
 | 6.1 | `claim` succeeds regardless of lock state | `claiming_is_available_while_the_position_is_locked` | ✅ |
 | 6.2 | `unstake` after `lock_end` always succeeds if the vault is solvent | `unstaking_after_the_lock_returns_principal` | ✅ |
-| 6.3 | No instruction's compute cost grows with staker or voter count | `bench::compute_is_constant` | ⬜ P6 |
+| 6.3 | No instruction's compute cost grows with staker or voter count | `staking_compute_does_not_grow_with_staker_count`, `governance_compute_does_not_grow_with_voter_count`, `claim_compute_tracks_staked_value_not_staker_count` | ✅ |
 | 6.4 | Pausing cannot trap principal — `unstake` and `claim` stay live | `pausing_blocks_deposits_but_never_traps_funds` | ✅ |
 | 6.5 | A position's rewards are claimable only by its owner | `a_staker_cannot_claim_another_stakers_position` | ✅ |
 
@@ -163,9 +163,24 @@ instruction. A runtime test attempting every other instruction as guardian would
 indistinguishable from a rug from the user's side; the pause here blocks *new* deposits
 and rate changes only.
 
-6.3 currently follows from the absence of any loop over user-growable sets, which is a
-sound argument but not a measurement — compute has non-obvious contributors, account
-deserialisation especially.
+6.3 is now measured rather than argued. Across a 64× sweep in staker count, `stake` and
+`unstake` are bit-identical and `cast_vote` costs the same on the 64th vote as on the
+first. `claim` moves by 244 CU — 0.8% — and the cause is worth stating, because it is not
+the staker set: the reward accumulator runs in `u128`, which SBF has no native instruction
+for, so LLVM emits software routines whose cost tracks operand bit-length. Sixty-four
+times the stake is six more bits.
+
+The controlled version of that experiment settles it. Reaching the same `total_weighted`
+two ways — 64 stakers holding one unit each, or one staker holding 64 — costs **exactly the
+same 30,941 CU**. Staker count differs by 64× between them and compute does not move, so
+count is not a variable; the size of the numbers is. That distinction is what §6.3 exists
+to draw.
+
+See [`compute_budget.rs`](../tests/integration/tests/compute_budget.rs) and the table in
+[TESTING.md](./TESTING.md#compute-cost). Three confounds had to be controlled first — PDA
+bump search alone costs 1,500 CU per derivation attempt and varies randomly per key, six
+times larger than the effect being measured — and the file documents all three, including
+a 31-CU residual it bounds but does not explain.
 
 ## 7. Vesting
 
@@ -187,7 +202,7 @@ deserialisation especially.
 
 ```bash
 anchor build 2>&1 | tee build.log && grep -i "stack offset" build.log  # must be empty
-cargo test --workspace          # 119 tests: unit + doc + runtime
+cargo test --workspace          # 124 tests: unit + doc + runtime
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
@@ -196,5 +211,5 @@ program READMEs are compiled via `#![doc = include_str!(..)]` — a broken code 
 is a real failure that `--lib` hides. Integration tests need `anchor build` to have run
 first, since they load the `.so` binaries.
 
-Governance and treasury runtime flows, and the fuzz suite, do not exist yet. See
+The fuzz suite does not exist yet, and nothing here has run against a real validator. See
 [TESTING.md](./TESTING.md) and [ROADMAP.md](./ROADMAP.md).

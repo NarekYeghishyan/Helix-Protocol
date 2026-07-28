@@ -23,7 +23,7 @@ says how much to trust each one.
 | 3 | Devnet deployment + verifiable builds | ⬜ Not started — **highest priority** |
 | 4 | Indexer + analytics API | ⬜ Not started |
 | 5 | Dashboard + wallet integration | ⬜ Not started |
-| 6 | Fuzzing + external audit prep | ⬜ Not started |
+| 6 | Fuzzing + external audit prep | ◐ Compute benchmarked (§6.3 measured); fuzzing not started |
 | 7 | Governance migration (burn the admin keys) | ⬜ Not started |
 
 ---
@@ -150,15 +150,24 @@ so the UI can say "position is still locked" instead of "custom program error: 0
 
 ## Phase 6 — Fuzzing and audit prep *(≈4–6 days, low confidence)*
 
-| Milestone | Deliverable | Est. |
-|---|---|---|
-| 6.1 | Trident stateful fuzzing over staking and governance | 2d |
-| 6.2 | Invariant harness: assert every [INVARIANTS.md](./INVARIANTS.md) property after each fuzz step | 1.5d |
-| 6.3 | Self-audit report; resolve findings | 1–2d |
-| 6.4 | Scope and brief an external audit | 0.5d |
+| Milestone | Deliverable | Est. | Status |
+|---|---|---|---|
+| 6.0 | **Compute benchmarks** against staker and voter count, to measure invariant §6.3 rather than argue it | 1d | ✅ Done |
+| 6.1 | Trident stateful fuzzing over staking and governance | 2d | ⬜ |
+| 6.2 | Invariant harness: assert every [INVARIANTS.md](./INVARIANTS.md) property after each fuzz step | 1.5d | ⬜ |
+| 6.3 | Self-audit report; resolve findings | 1–2d | ⬜ |
+| 6.4 | Scope and brief an external audit | 0.5d | ⬜ |
 
-Low confidence: fuzzing finds what it finds. The 1–2 days for 6.3 assumes the findings
-are shallow, which is exactly the assumption fuzzing exists to test.
+6.0 was pulled forward out of order because it needed nothing that Phase 3 is blocked on.
+It confirmed §6.3 and produced the compute table in
+[TESTING.md](./TESTING.md#compute-cost): every instruction has better than 4× headroom
+against the default budget, and reaching the same staked total with 64 stakers or with one
+costs bit-identical compute. Most of the work was not the measurement but identifying what
+made an earlier draft of it unreproducible — PDA bump derivation, at 1,500 CU an attempt,
+varying with a randomly generated mint.
+
+Low confidence on the rest: fuzzing finds what it finds. The 1–2 days for 6.3 assumes the
+findings are shallow, which is exactly the assumption fuzzing exists to test.
 
 ## Phase 7 — Governance migration *(≈2 days, high confidence)*
 
@@ -200,5 +209,4 @@ Named so that absence reads as a decision rather than an oversight:
 | No integration tests | Cross-program wiring unverified at runtime | Phase 2 |
 | Token metadata not initialised | Mint has no on-chain name/symbol; needs the Token-2022 metadata extension CPI plus a realloc for variable-length fields | Phase 3 |
 | `Position` accounts are never closed | Rent is not reclaimed on full exit | Phase 2 |
-| No compute-unit benchmarks | Invariant §6.3 (flat compute vs. staker count) is argued from code structure, not measured | Phase 6 |
 | Single reward mint per pool | Multi-reward pools need a per-reward accumulator | Deferred; no demand |

@@ -37,6 +37,12 @@ jobs:
       - name: cargo clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
 
+      # Documentation is a deliverable here, and a link that resolves to nothing
+      # is the quiet way it stops being trustworthy. Sixteen anchors were broken
+      # for several commits without anything noticing.
+      - name: Documentation links
+        run: python3 scripts/check-doc-links.py
+
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -89,8 +95,12 @@ jobs:
 
       - name: Install Anchor
         if: steps.anchor-cache.outputs.cache-hit != 'true'
+        # Install avm from the Anchor repository, not from crates.io. The crates.io
+        # name `avm` belongs to an unrelated, abandoned 2015 crate that fails to
+        # build against modern OpenSSL — `cargo install --locked avm` looks correct
+        # and installs the wrong thing.
         run: |
-          cargo install --locked avm
+          cargo install --git https://github.com/solana-foundation/anchor avm --locked --force
           avm install "$ANCHOR_VERSION"
 
       - name: Select Anchor version
@@ -130,17 +140,16 @@ jobs:
       # The full suite, not `--lib`. `--lib` silently skips doctests, and the
       # program READMEs are pulled in with `#![doc = include_str!(..)]` — so a
       # broken code fence in a README is a real compile failure that `--lib`
-      # hides. It also picks up the integration tests under tests/integration.
-      - name: Rust tests (unit + doc + integration)
+      # hides. It also picks up the runtime tests under tests/integration, which
+      # load the .so files the previous step just built, and the compute
+      # benchmarks that assert every instruction stays inside its budget.
+      - name: Rust tests (unit + doc + runtime)
         run: cargo test --workspace
 
-      # Integration tests are ROADMAP Phase 2 and do not exist yet, so `anchor test`
-      # is deliberately not run — it would fail on an empty test glob, and stubbing it
-      # to pass would report a green integration suite that contains nothing.
-      # Re-enable this step in the same commit that adds tests/.
-      #
-      # - name: Anchor integration tests
-      #   run: anchor test
+      # `anchor test` is deliberately not run. The runtime suite is Rust against
+      # LiteSVM, executed by the step above; there is no TypeScript suite, and
+      # stubbing one green would report a passing integration run containing
+      # nothing.
 
       - name: Upload build artifacts
         if: always()

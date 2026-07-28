@@ -10,7 +10,7 @@ is bounded by the honesty of its coverage claims.
 ```bash
 anchor build                                                  # required first — the
                                                               # runtime tests load .so files
-cargo test --workspace                                        # 119 tests: unit + doc + runtime
+cargo test --workspace                                        # 124 tests: unit + doc + runtime
 cargo test -p helix-staking --lib                             # one program's unit tests
 cargo test -p helix-staking --lib -- --nocapture rounding     # one test, with output
 
@@ -30,7 +30,7 @@ status code. See [F-3](./SECURITY-ASSESSMENT.md#f-3--sbf-stack-frame-overflow).
 
 ## What is covered
 
-**65 unit tests** over pure functions and state machines, and **54 runtime tests** against
+**65 unit tests** over pure functions and state machines, and **59 runtime tests** against
 the real BPF programs.
 
 ### Unit tests
@@ -59,6 +59,7 @@ the real BPF programs.
 | `vesting_e2e.rs` | 12 | §1.5, §1.6, §7.5, §7.7–7.9 — grant → cliff → claim → revoke, forward-only revocation, committed balance protection, executor migration |
 | `bootstrap_atomicity.rs` | 3 | F-1's mitigation: the bootstrap fits one transaction (748 B / 17 accounts, asserted against the 1232-byte limit), and re-initialisation fails afterwards |
 | `token_admin_e2e.rs` | 7 | §5.2, §5.4, §5.9, §5.10 — the token-manager admin handover in real deployment order, and that governance then holds every admin power |
+| `compute_budget.rs` | 5 | §6.3 — compute measured across a 64× sweep in staker and voter count, plus a budget ceiling on every hot-path instruction |
 
 ### Testing conventions worth copying
 
@@ -77,11 +78,104 @@ is a slow-motion accounting bug.
 division has a test pinning which side benefits, because "off by one lamport" compounds
 across every position and every update.
 
+**A measurement with an uncontrolled confound is not a measurement.** Compute figures moved
+by 1,500-unit steps between runs because PDA bumps derive from a randomly generated mint,
+which is six times the effect being measured. See [Compute cost](#compute-cost).
+
 **Test the predicate the handler evaluates, not just its inputs.** This is the lesson from
 [F-2](./SECURITY-ASSESSMENT.md#f-2--reward-liability-computed-from-deposits): both halves
 of the solvency guard were individually correct and individually tested, and the defect
 lived in their composition — a guard that could never approve any non-zero reward rate.
 `solvency_ok()` in the staking tests now mirrors the handler's actual comparison.
+
+## Compute cost
+
+Measured by [`compute_budget.rs`](../tests/integration/tests/compute_budget.rs) against the
+real BPF programs. Print it with:
+
+```bash
+cargo test -p helix-integration-tests --test compute_budget -- --nocapture
+```
+
+| Instruction | CU | % of the 200k default |
+|---|---:|---:|
+| `staking::stake` | 24,261 | 12.1% |
+| `staking::claim` | 30,763 | 15.4% |
+| `staking::fund_rewards` | 23,436 | 11.7% |
+| `staking::set_reward_rate` | 16,729 | 8.4% |
+| `governance::create_proposal` | 15,255 | 7.6% |
+| `governance::activate_proposal` | 8,695 | 4.3% |
+| `governance::cast_vote` | 15,142 | 7.6% |
+| `governance::finalize_proposal` | 8,142 | 4.1% |
+| `governance::queue_proposal` | 7,866 | 3.9% |
+| `governance::execute_treasury_transfer` | 35,883 | 17.9% |
+| `treasury::deposit` | 13,959 | 7.0% |
+
+Reproducible byte for byte, but specific to this deployment: PDA bumps derive from the mint
+address, and each extra derivation attempt costs 1,500 CU (see below). Read these as
+"±1,500 per instruction on a different mint", not as universal constants.
+
+The worst case is `execute_treasury_transfer` at 17.9%, which is the deepest call stack in
+the system: governance verifies the proposal, signs as the executor PDA, CPIs into the
+treasury, which CPIs into Token-2022. Everything has better than 4× headroom against the
+default per-instruction budget, so no caller has to prepend a `ComputeBudget` instruction —
+and the test asserts that headroom rather than merely asserting it fits. A program sitting
+just inside the budget breaks on the next Anchor or Token-2022 release that costs a few
+thousand units more.
+
+### §6.3, measured
+
+| | 1 staker | 4 | 16 | 64 |
+|---|---:|---:|---:|---:|
+| `stake` | 24,261 | 24,261 | 24,261 | 24,261 |
+| `unstake` | 24,279 | 24,279 | 24,279 | 24,279 |
+| `claim` | 30,697 | 30,939 | 30,940 | 30,941 |
+| `cast_vote` (by prior votes) | 15,019 | 15,019 | 15,019 | 15,019 |
+
+`stake`, `unstake` and `cast_vote` are bit-identical at every count. `claim` moves 244 CU
+across the sweep — 0.8% — and the cause is not the staker set: the reward accumulator runs
+in `u128`, which SBF has no native instruction for, so LLVM emits software routines whose
+cost tracks operand bit-length. Sixty-four times the stake is six more bits.
+
+The controlled experiment separates value from count. Reaching the same `total_weighted`
+two different ways — 64 stakers holding one unit each, or one staker holding 64 — costs
+**bit-identical 30,941 CU**. Staker count differs by 64× between them and compute does not
+move at all, while changing the value alone moves it 244 CU. Count is not a variable;
+magnitude is. That is the whole of §6.3.
+
+### Three confounds that had to be controlled first
+
+The first two are larger than the effect being measured, and none is obvious.
+
+**PDA bump search costs 1,500 CU per attempt.** Anchor derives a bump on chain wherever the
+constraint is a bare `bump` rather than `bump = <stored>`, which compiles to
+`find_program_address` — try 255, then 254, until the candidate is off-curve. Which bump a
+given seed set lands on is effectively random, so two otherwise identical stakers can
+differ by thousands of units. Measured directly by
+`pda_bump_search_costs_more_than_pool_size_ever_does`: bump 251 costs exactly 6,000 CU more
+than bump 255. The benchmarks grind their probe keypairs onto the canonical bump so the
+comparison is exact rather than merely tolerant — **a tolerance wide enough to absorb the
+noise would have been wide enough to hide the growth being looked for.**
+
+**Every PDA descends from the mint, and so does every bump.** `System::bootstrap` generates
+a random mint, which moved the whole table by multiples of 1,500 between runs and made
+cross-`System` comparison meaningless. An early draft of the magnitude test read that noise
+as signal and "confirmed" a mechanism that was not there — it flipped sign on the next run.
+The benchmarks now pin the mint, and the table above is reproducible byte for byte.
+
+**A 31-CU quantum of runtime noise remains, and is documented rather than explained away.**
+A measurement occasionally lands exactly 31 CU high — never more, never low, most often on
+the first measurement after a clock warp. It is not the code under test: twenty stakes by
+twenty different owners in one pool measured 24,261 CU each to the unit, and every piece of
+protocol state was verified identical across a pair that differed (`total_weighted`,
+`reward_per_token` before and after, `last_update_ts`, the settled amount). Past that it is
+unattributed, and the tests carry a 64 CU floor to absorb it. It is 0.2% of the smallest
+instruction here, against an effect that would be thousands of units — so it bounds the
+claim without weakening it.
+
+The general lesson from all three: a benchmark that has not identified its confounds is not
+measuring what its name says. Two of these were found only because an assertion was written
+tightly enough to fail on them.
 
 ## What is NOT covered
 
@@ -89,7 +183,6 @@ Read this section before trusting anything above.
 
 | Gap | Consequence | Fix |
 |---|---|---|
-| No compute benchmarks | Invariant §6.3 is argued from code structure, not measured | Phase 6 |
 | No fuzzing | Only hand-chosen inputs have been tried | Phase 6 |
 | Deployment-time front-running (§5.8) | F-1's *mitigation* is measured and tested; the window before bootstrap lands is not closeable in-program without a deployer gate | Phase 3 |
 | Multi-staker distribution at scale | Two or three positions are exercised, not hundreds | Phase 6 (fuzzing) |
@@ -163,7 +256,8 @@ test catch it.**
 1. **lint** — `fmt --check`, `clippy -D warnings`, eslint/prettier. Fast, fails first.
 2. **audit** — `cargo audit` against RustSec.
 3. **test** — `anchor keys verify`, `anchor build` with the stack-offset grep, then
-   `cargo test --workspace` (unit + doc + runtime). Artifacts (`.so`, IDL) retained 14
+   `cargo test --workspace` (unit + doc + runtime, including the compute
+   benchmarks). Artifacts (`.so`, IDL) retained 14
    days. `anchor test` is deliberately not run: there is no TypeScript suite, and stubbing
    it green would report a passing integration suite containing nothing.
 

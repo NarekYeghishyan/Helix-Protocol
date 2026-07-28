@@ -8,7 +8,7 @@ Rust with the Anchor framework.
 [![Solana](https://img.shields.io/badge/solana-3.x-purple)](https://solana.com)
 [![License](https://img.shields.io/badge/license-Apache--2.0-green)](./LICENSE)
 
-> **Status: unaudited. Not deployed.** All four programs build to BPF and pass 119 tests
+> **Status: unaudited. Not deployed.** All four programs build to BPF and pass 124 tests
 > locally, including runtime tests that execute the full governance → treasury authority
 > chain and a real Token-2022 mint with transfer fees. The analytics stack and a devnet
 > deployment are scoped in [ROADMAP.md](./docs/ROADMAP.md). Nothing here has held real
@@ -48,12 +48,18 @@ That chain is the security model.
 
 ## Three decisions worth reading the code for
 
-**Reward distribution is O(1), not O(stakers).** Rewards use a `reward_per_token`
-accumulator in u128 fixed point — the Synthetix/MasterChef shape. No instruction
-iterates over the staker set. The naive alternative passes a ten-staker test and then
-permanently bricks the pool at ten thousand, once distribution exceeds the compute
-budget. → [`staking/src/state.rs`](./programs/staking/src/state.rs),
-[architecture](./docs/ARCHITECTURE.md#reward-accounting).
+**Reward distribution is O(1), not O(stakers) — and it is measured, not asserted.**
+Rewards use a `reward_per_token` accumulator in u128 fixed point, the Synthetix/MasterChef
+shape. No instruction iterates over the staker set. The naive alternative passes a
+ten-staker test and then permanently bricks the pool at ten thousand, once distribution
+exceeds the compute budget.
+
+The benchmark reaches the same staked total two ways — 64 stakers holding one unit each, or
+one staker holding 64 — and both cost **bit-identical compute**. Staker count differs by
+64× and the number does not move, which is a stronger statement than any sweep alone can
+make. → [`staking/src/state.rs`](./programs/staking/src/state.rs),
+[`compute_budget.rs`](./tests/integration/tests/compute_budget.rs),
+[compute table](./docs/TESTING.md#compute-cost).
 
 **Flash-loan governance attacks fail by construction.** A position may vote only if
 `lock_end >= proposal.voting_ends_at` — you can only vote with stake you are unable to
@@ -124,7 +130,7 @@ docs/              the five deliverables above
 ```bash
 anchor build 2>&1 | tee build.log
 grep -i "stack offset" build.log   # must be empty — anchor build exits 0 even when it isn't
-cargo test --workspace             # 119 tests: unit + doc + runtime
+cargo test --workspace             # 124 tests: unit + doc + runtime
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all -- --check
 ```
@@ -133,14 +139,14 @@ cargo fmt --all -- --check
 every state machine directly — including a differential check that fixed-point rounding
 never favours the user over the pool.
 
-**54 runtime tests** ([`tests/integration/`](./tests/integration)) execute the real BPF
+**59 runtime tests** ([`tests/integration/`](./tests/integration)) execute the real BPF
 programs against the real Token-2022 program via LiteSVM: the full authority chain (a
 passed, timelocked proposal moving treasury funds), the staking withdrawal paths, and a
 negative test for each attack in the [threat model](./docs/THREAT-MODEL.md) — direct
 treasury calls, pre-timelock execution, double execution, double voting, flash-staked
 voting, and substituted destinations.
 
-Of 54 documented invariants, **48 are verified, 2 partial, 4 untested** — tracked row by
+Of 54 documented invariants, **49 are verified, 2 partial, 3 untested** — tracked row by
 row in [INVARIANTS.md](./docs/INVARIANTS.md). That table is kept honest deliberately: a
 claim no test can falsify is documentation, not a guarantee.
 

@@ -10,6 +10,7 @@
 use anchor_lang::prelude::*;
 use anchor_lang::{InstructionData, ToAccountMetas};
 use anchor_spl::token_2022::spl_token_2022;
+use litesvm::types::TransactionMetadata;
 use litesvm::LiteSVM;
 use solana_instruction::Instruction;
 use solana_keypair::Keypair;
@@ -21,7 +22,7 @@ use spl_token_2022::extension::ExtensionType;
 use spl_token_2022::state::{Account as T22Account, Mint as T22Mint};
 
 pub mod bootstrap;
-pub use bootstrap::System;
+pub use bootstrap::{Staker, System};
 
 /// Fee configuration for a Token-2022 mint.
 ///
@@ -107,6 +108,29 @@ impl TestEnv {
         instructions: &[Instruction],
         extra_signers: &[&Keypair],
     ) -> std::result::Result<(), String> {
+        self.dispatch(instructions, extra_signers).map(|_| ())
+    }
+
+    /// Sends and returns the compute units the transaction consumed.
+    ///
+    /// The runtime reports one accumulated figure per transaction, so this is only
+    /// attributable when the transaction carries a single instruction. Callers in
+    /// `compute_budget.rs` keep to that; nothing else needs this at all.
+    pub fn compute_units(
+        &mut self,
+        instructions: &[Instruction],
+        extra_signers: &[&Keypair],
+    ) -> u64 {
+        self.dispatch(instructions, extra_signers)
+            .unwrap_or_else(|e| panic!("transaction failed: {e}"))
+            .compute_units_consumed
+    }
+
+    fn dispatch(
+        &mut self,
+        instructions: &[Instruction],
+        extra_signers: &[&Keypair],
+    ) -> std::result::Result<TransactionMetadata, String> {
         let mut signers: Vec<&Keypair> = vec![&self.payer];
         signers.extend_from_slice(extra_signers);
 
@@ -128,7 +152,6 @@ impl TestEnv {
 
         self.svm
             .send_transaction(tx)
-            .map(|_| ())
             // Include the logs: an Anchor error code alone ("custom program error:
             // 0x1771") tells you nothing, and the log line names the constraint.
             .map_err(|e| format!("{:?}\nlogs:\n  {}", e.err, e.meta.logs.join("\n  ")))
@@ -188,8 +211,17 @@ impl TestEnv {
         mint_authority: &Pubkey,
         fee: Option<TransferFee>,
     ) -> Keypair {
-        let mint = Keypair::new();
+        self.create_mint_with_keypair(Keypair::new(), decimals, mint_authority, fee)
+    }
 
+    /// The same, with the mint key supplied rather than generated.
+    pub fn create_mint_with_keypair(
+        &mut self,
+        mint: Keypair,
+        decimals: u8,
+        mint_authority: &Pubkey,
+        fee: Option<TransferFee>,
+    ) -> Keypair {
         let extensions: Vec<ExtensionType> = if fee.is_some() {
             vec![ExtensionType::TransferFeeConfig]
         } else {

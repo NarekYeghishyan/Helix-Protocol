@@ -15,6 +15,9 @@ cargo test --workspace
 | [`integration/tests/governance_e2e.rs`](./integration/tests/governance_e2e.rs) | §4.1–4.7, §4.11–4.12, §5.1 — the authority chain, plus a negative test per threat-model attack |
 | [`integration/tests/staking_lifecycle.rs`](./integration/tests/staking_lifecycle.rs) | §1.2, §1.4, §6.1–6.5 — accrual, claim, partial and full unstake, pause semantics |
 | [`integration/tests/vesting_e2e.rs`](./integration/tests/vesting_e2e.rs) | §1.5, §1.6, §7.5, §7.7–7.9 — grant → cliff → claim → revoke, and F-8's regression check |
+| [`integration/tests/token_admin_e2e.rs`](./integration/tests/token_admin_e2e.rs) | §5.2, §5.4, §5.9, §5.10 — the token-manager admin handover, and F-9's regression check |
+| [`integration/tests/bootstrap_atomicity.rs`](./integration/tests/bootstrap_atomicity.rs) | F-1's mitigation — the whole bootstrap fits one transaction, and cannot be re-run |
+| [`integration/tests/compute_budget.rs`](./integration/tests/compute_budget.rs) | §6.3 — compute measured across a 64× sweep in staker and voter count, plus a budget ceiling per instruction |
 | [`integration/src/lib.rs`](./integration/src/lib.rs) | Harness: mint creation with extensions, clock warping, PDA derivations |
 | [`integration/src/bootstrap.rs`](./integration/src/bootstrap.rs) | A fully wired system — pool, realm, treasury, authorities connected |
 
@@ -88,7 +91,13 @@ observed clock rather than hardcoding round numbers.
 `Signer` field and signing with a different key panics at `Transaction::sign` — the program
 never runs, so the test proves nothing while appearing to fail correctly.
 
+**Measuring compute? Pin the mint.** `System::bootstrap` generates a random mint, every PDA
+in the protocol descends from it, and Anchor derives several of those bumps on chain at
+1,500 CU per attempt. Compute figures therefore move by multiples of 1,500 between runs.
+Use `System::bootstrap_with_mint` for anything that compares measurements — see the module
+docs in [`compute_budget.rs`](./integration/tests/compute_budget.rs).
+
 ## Still missing
 
-Compute benchmarks and fuzzing (Phase 6), and anything that needs a real validator rather
-than LiteSVM — fees, congestion, reorgs (Phase 3). See [ROADMAP.md](../docs/ROADMAP.md).
+Fuzzing (Phase 6), and anything that needs a real validator rather than LiteSVM — fees,
+congestion, reorgs (Phase 3). See [ROADMAP.md](../docs/ROADMAP.md).

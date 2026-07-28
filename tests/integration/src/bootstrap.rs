@@ -55,16 +55,46 @@ pub struct System {
     pub voter_tokens: Pubkey,
 }
 
+/// A staker independent of [`System::voter`] — own key, own token account, own
+/// position.
+///
+/// Most tests only need one actor, but anything asserting a property *across*
+/// stakers (reward distribution, vote tallies, compute cost as the pool fills)
+/// needs the pool populated by distinct owners rather than one owner holding
+/// several positions.
+pub struct Staker {
+    pub owner: Keypair,
+    pub tokens: Pubkey,
+    pub position: Pubkey,
+    pub position_id: u64,
+}
+
 impl System {
     /// Builds everything, with the treasury's sole spender set to the realm's
     /// executor PDA.
     pub fn bootstrap(fee: Option<TransferFee>, treasury_funding: u64) -> Self {
+        Self::bootstrap_with_mint(Keypair::new(), fee, treasury_funding)
+    }
+
+    /// The same, with the mint key supplied rather than generated.
+    ///
+    /// Every PDA in the system descends from the mint, and so does every PDA
+    /// *bump*. Anchor derives some of those bumps on chain, at a syscall per
+    /// attempt, which makes a random mint a source of run-to-run compute variance
+    /// in 1500-unit steps. Anything comparing measurements across two `System`s
+    /// has to hold the mint fixed or it is comparing deployments, not code — see
+    /// `compute_budget.rs`.
+    pub fn bootstrap_with_mint(
+        mint_keypair: Keypair,
+        fee: Option<TransferFee>,
+        treasury_funding: u64,
+    ) -> Self {
         let mut env = TestEnv::new();
         let payer = env.payer_pubkey();
 
         let mint_authority = Keypair::new();
         let mint = env
-            .create_mint(DECIMALS, &mint_authority.pubkey(), fee)
+            .create_mint_with_keypair(mint_keypair, DECIMALS, &mint_authority.pubkey(), fee)
             .pubkey();
 
         // ---------------------------------------------------------- staking
@@ -179,55 +209,90 @@ impl System {
 
     /// Mints to the payer and deposits into the treasury vault.
     pub fn fund_treasury(&mut self, amount: u64) {
+        let ix = self.fund_treasury_ix(amount);
+        self.env.send(&[ix], &[]);
+    }
+
+    /// Prepares the funder account and returns the deposit unsent, so a caller can
+    /// measure it in isolation from the mint and token-account setup around it.
+    pub fn fund_treasury_ix(&mut self, amount: u64) -> solana_instruction::Instruction {
         let payer = self.env.payer_pubkey();
         let funder_tokens = self.env.create_token_account(&self.mint, &payer).pubkey();
         let authority = self.mint_authority.insecure_clone();
         self.env
             .mint_tokens_raw(&self.mint, &funder_tokens, &authority, amount);
 
-        self.env.send(
-            &[TestEnv::ix(
-                helix_treasury::ID,
-                helix_treasury::accounts::Deposit {
-                    treasury: self.treasury,
-                    depositor: payer,
-                    mint: self.mint,
-                    depositor_token_account: funder_tokens,
-                    vault: self.treasury_vault,
-                    token_program: token_2022::ID,
-                },
-                helix_treasury::instruction::Deposit { amount },
-            )],
-            &[],
-        );
+        TestEnv::ix(
+            helix_treasury::ID,
+            helix_treasury::accounts::Deposit {
+                treasury: self.treasury,
+                depositor: payer,
+                mint: self.mint,
+                depositor_token_account: funder_tokens,
+                vault: self.treasury_vault,
+                token_program: token_2022::ID,
+            },
+            helix_treasury::instruction::Deposit { amount },
+        )
     }
 
     /// Opens a staking position for the voter.
     pub fn stake(&mut self, position_id: u64, amount: u64, tier: LockTier) -> Pubkey {
         let (position, _) = pda::position(&self.pool, &self.voter.pubkey(), position_id);
-
-        let ix = TestEnv::ix(
-            helix_staking::ID,
-            helix_staking::accounts::Stake {
-                pool: self.pool,
-                owner: self.voter.pubkey(),
-                position,
-                stake_mint: self.mint,
-                owner_token_account: self.voter_tokens,
-                stake_vault: self.stake_vault,
-                token_program: token_2022::ID,
-                system_program: anchor_lang::system_program::ID,
-            },
-            helix_staking::instruction::Stake {
-                position_id,
-                amount,
-                tier,
-            },
-        );
-
+        let ix = self.stake_ix(position_id, amount, tier);
         let voter = self.voter.insecure_clone();
         self.env.send(&[ix], &[&voter]);
         position
+    }
+
+    /// The `position_id` the next `stake` must carry.
+    ///
+    /// `stake` requires `position_id == pool.position_count`, so the id is not the
+    /// caller's to choose — it is a pool-wide monotonic counter, shared across all
+    /// owners.
+    pub fn next_position_id(&self) -> u64 {
+        self.env
+            .anchor_account::<helix_staking::state::Pool>(&self.pool)
+            .position_count
+    }
+
+    /// Gives `owner` lamports for rent and `amount` tokens to stake, returning
+    /// their token account and the `position_id` their next stake must carry.
+    ///
+    /// Stops deliberately short of staking, so a caller that wants to measure or
+    /// reject the `stake` instruction itself can build it. [`Self::add_staker`] is
+    /// the one-call version.
+    pub fn prepare_staker(&mut self, owner: &Pubkey, amount: u64) -> (Pubkey, u64) {
+        self.env
+            .svm
+            .airdrop(owner, 10 * LAMPORTS_PER_SOL)
+            .expect("airdrop failed");
+
+        let tokens = self.env.create_token_account(&self.mint, owner).pubkey();
+        let authority = self.mint_authority.insecure_clone();
+        self.env
+            .mint_tokens_raw(&self.mint, &tokens, &authority, amount);
+
+        (tokens, self.next_position_id())
+    }
+
+    /// Funds `owner` and opens a position for them.
+    ///
+    /// Takes the keypair rather than generating one so callers that need a
+    /// particular derived address (see `compute_budget.rs`) can supply it.
+    pub fn add_staker(&mut self, owner: Keypair, amount: u64, tier: LockTier) -> Staker {
+        let (tokens, position_id) = self.prepare_staker(&owner.pubkey(), amount);
+        let (position, _) = pda::position(&self.pool, &owner.pubkey(), position_id);
+
+        let ix = self.stake_ix_for(&owner.pubkey(), &tokens, position_id, amount, tier);
+        self.env.send(&[ix], &[&owner]);
+
+        Staker {
+            owner,
+            tokens,
+            position,
+            position_id,
+        }
     }
 
     pub fn create_proposal(
@@ -237,14 +302,38 @@ impl System {
         proposer_position: Pubkey,
     ) -> Pubkey {
         let (proposal, _) = pda::proposal(&self.realm, proposal_id);
+        let ix = self.create_proposal_ix(proposal_id, action, proposer_position);
+        let voter = self.voter.insecure_clone();
+        self.env.send(&[ix], &[&voter]);
+        proposal
+    }
 
-        let ix = TestEnv::ix(
+    pub fn create_proposal_ix(
+        &self,
+        proposal_id: u64,
+        action: ProposalAction,
+        proposer_position: Pubkey,
+    ) -> solana_instruction::Instruction {
+        self.create_proposal_ix_for(&self.voter.pubkey(), proposal_id, action, proposer_position)
+    }
+
+    /// The same, for a proposer other than [`Self::voter`].
+    pub fn create_proposal_ix_for(
+        &self,
+        proposer: &Pubkey,
+        proposal_id: u64,
+        action: ProposalAction,
+        proposer_position: Pubkey,
+    ) -> solana_instruction::Instruction {
+        let (proposal, _) = pda::proposal(&self.realm, proposal_id);
+
+        TestEnv::ix(
             helix_governance::ID,
             helix_governance::accounts::CreateProposal {
                 realm: self.realm,
-                proposer: self.voter.pubkey(),
+                proposer: *proposer,
                 proposer_position,
-                owner: self.voter.pubkey(),
+                owner: *proposer,
                 proposal,
                 system_program: anchor_lang::system_program::ID,
             },
@@ -254,30 +343,39 @@ impl System {
                 title: "Test proposal".to_string(),
                 descriptor_uri: "ipfs://test".to_string(),
             },
-        );
-
-        let voter = self.voter.insecure_clone();
-        self.env.send(&[ix], &[&voter]);
-        proposal
+        )
     }
 
     pub fn activate(&mut self, proposal: Pubkey) {
-        self.env.send(
-            &[TestEnv::ix(
-                helix_governance::ID,
-                helix_governance::accounts::ActivateProposal {
-                    realm: self.realm,
-                    proposal,
-                    staking_pool: self.pool,
-                },
-                helix_governance::instruction::ActivateProposal {},
-            )],
-            &[],
-        );
+        let ix = self.activate_ix(proposal);
+        self.env.send(&[ix], &[]);
+    }
+
+    pub fn activate_ix(&self, proposal: Pubkey) -> solana_instruction::Instruction {
+        TestEnv::ix(
+            helix_governance::ID,
+            helix_governance::accounts::ActivateProposal {
+                realm: self.realm,
+                proposal,
+                staking_pool: self.pool,
+            },
+            helix_governance::instruction::ActivateProposal {},
+        )
     }
 
     pub fn vote_ix(
         &self,
+        proposal: Pubkey,
+        position: Pubkey,
+        choice: VoteChoice,
+    ) -> solana_instruction::Instruction {
+        self.vote_ix_for(&self.voter.pubkey(), proposal, position, choice)
+    }
+
+    /// The same, for a voter other than [`Self::voter`].
+    pub fn vote_ix_for(
+        &self,
+        voter: &Pubkey,
         proposal: Pubkey,
         position: Pubkey,
         choice: VoteChoice,
@@ -288,7 +386,7 @@ impl System {
             helix_governance::accounts::CastVote {
                 realm: self.realm,
                 proposal,
-                voter: self.voter.pubkey(),
+                voter: *voter,
                 position,
                 vote_record,
                 system_program: anchor_lang::system_program::ID,
@@ -405,31 +503,46 @@ impl System {
         self.env.create_token_account(&self.mint, owner).pubkey()
     }
 
+    /// Tops up [`Self::voter`]'s balance.
+    ///
+    /// `bootstrap` mints them enough for the small stakes most tests use; anything
+    /// wanting a realistic position size has to ask for more.
+    pub fn fund_voter(&mut self, amount: u64) {
+        let authority = self.mint_authority.insecure_clone();
+        let tokens = self.voter_tokens;
+        let mint = self.mint;
+        self.env.mint_tokens_raw(&mint, &tokens, &authority, amount);
+    }
+
     // ------------------------------------------------------- staking rewards
 
     /// Mints and deposits into the reward vault. Permissionless by design.
     pub fn fund_rewards(&mut self, amount: u64) {
+        let ix = self.fund_rewards_ix(amount);
+        self.env.send(&[ix], &[]);
+    }
+
+    /// Prepares the funder account and returns the deposit unsent. See
+    /// [`Self::fund_treasury_ix`].
+    pub fn fund_rewards_ix(&mut self, amount: u64) -> solana_instruction::Instruction {
         let payer = self.env.payer_pubkey();
         let funder_tokens = self.env.create_token_account(&self.mint, &payer).pubkey();
         let authority = self.mint_authority.insecure_clone();
         self.env
             .mint_tokens_raw(&self.mint, &funder_tokens, &authority, amount);
 
-        self.env.send(
-            &[TestEnv::ix(
-                helix_staking::ID,
-                helix_staking::accounts::FundRewards {
-                    pool: self.pool,
-                    funder: payer,
-                    reward_mint: self.mint,
-                    funder_token_account: funder_tokens,
-                    reward_vault: self.reward_vault,
-                    token_program: token_2022::ID,
-                },
-                helix_staking::instruction::FundRewards { amount },
-            )],
-            &[],
-        );
+        TestEnv::ix(
+            helix_staking::ID,
+            helix_staking::accounts::FundRewards {
+                pool: self.pool,
+                funder: payer,
+                reward_mint: self.mint,
+                funder_token_account: funder_tokens,
+                reward_vault: self.reward_vault,
+                token_program: token_2022::ID,
+            },
+            helix_staking::instruction::FundRewards { amount },
+        )
     }
 
     pub fn set_reward_rate_ix(
@@ -471,16 +584,26 @@ impl System {
     }
 
     pub fn claim_ix(&self, position: Pubkey) -> solana_instruction::Instruction {
+        self.claim_ix_for(&self.voter.pubkey(), &self.voter_tokens, position)
+    }
+
+    /// The same, for an owner other than [`Self::voter`].
+    pub fn claim_ix_for(
+        &self,
+        owner: &Pubkey,
+        owner_tokens: &Pubkey,
+        position: Pubkey,
+    ) -> solana_instruction::Instruction {
         let (vault_authority, _) = pda::vault_authority(&self.pool);
         TestEnv::ix(
             helix_staking::ID,
             helix_staking::accounts::Claim {
                 pool: self.pool,
-                owner: self.voter.pubkey(),
+                owner: *owner,
                 position,
                 reward_mint: self.mint,
                 reward_vault: self.reward_vault,
-                owner_reward_account: self.voter_tokens,
+                owner_reward_account: *owner_tokens,
                 vault_authority,
                 token_program: token_2022::ID,
             },
@@ -489,16 +612,27 @@ impl System {
     }
 
     pub fn unstake_ix(&self, position: Pubkey, amount: u64) -> solana_instruction::Instruction {
+        self.unstake_ix_for(&self.voter.pubkey(), &self.voter_tokens, position, amount)
+    }
+
+    /// The same, for an owner other than [`Self::voter`].
+    pub fn unstake_ix_for(
+        &self,
+        owner: &Pubkey,
+        owner_tokens: &Pubkey,
+        position: Pubkey,
+        amount: u64,
+    ) -> solana_instruction::Instruction {
         let (vault_authority, _) = pda::vault_authority(&self.pool);
         TestEnv::ix(
             helix_staking::ID,
             helix_staking::accounts::Unstake {
                 pool: self.pool,
-                owner: self.voter.pubkey(),
+                owner: *owner,
                 position,
                 stake_mint: self.mint,
                 stake_vault: self.stake_vault,
-                owner_token_account: self.voter_tokens,
+                owner_token_account: *owner_tokens,
                 vault_authority,
                 token_program: token_2022::ID,
             },
@@ -513,15 +647,33 @@ impl System {
         amount: u64,
         tier: LockTier,
     ) -> solana_instruction::Instruction {
-        let (position, _) = pda::position(&self.pool, &self.voter.pubkey(), position_id);
+        self.stake_ix_for(
+            &self.voter.pubkey(),
+            &self.voter_tokens,
+            position_id,
+            amount,
+            tier,
+        )
+    }
+
+    /// The same, for an owner other than [`Self::voter`].
+    pub fn stake_ix_for(
+        &self,
+        owner: &Pubkey,
+        owner_tokens: &Pubkey,
+        position_id: u64,
+        amount: u64,
+        tier: LockTier,
+    ) -> solana_instruction::Instruction {
+        let (position, _) = pda::position(&self.pool, owner, position_id);
         TestEnv::ix(
             helix_staking::ID,
             helix_staking::accounts::Stake {
                 pool: self.pool,
-                owner: self.voter.pubkey(),
+                owner: *owner,
                 position,
                 stake_mint: self.mint,
-                owner_token_account: self.voter_tokens,
+                owner_token_account: *owner_tokens,
                 stake_vault: self.stake_vault,
                 token_program: token_2022::ID,
                 system_program: anchor_lang::system_program::ID,
@@ -547,6 +699,12 @@ impl System {
     ) -> std::result::Result<(), String> {
         let voter = self.voter.insecure_clone();
         self.env.try_send(&[ix], &[&voter])
+    }
+
+    /// Sends an instruction signed by the voter, returning its compute cost.
+    pub fn compute_as_voter(&mut self, ix: solana_instruction::Instruction) -> u64 {
+        let voter = self.voter.insecure_clone();
+        self.env.compute_units(&[ix], &[&voter])
     }
 
     // ------------------------------------------------------- vesting streams

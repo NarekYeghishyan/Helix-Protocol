@@ -57,8 +57,15 @@ is permanently stuck.*
 
 **Defence.** No instruction iterates over stakers, positions, or voters. Reward
 distribution is O(1) via the accumulator; vote tallies are running totals updated per
-vote. Invariant 6.3 benchmarks compute units against staker count and asserts a flat
-line.
+vote.
+
+Measured, not assumed. Across a 64× sweep in staker count `stake` and `unstake` are
+bit-identical, and the 64th vote on a proposal costs the same as the first. `claim` moves
+0.8%, and reaching the same staked total with 64 stakers or with one costs bit-identical
+compute — so the staker set is not what moves it. Every instruction has better than 4×
+headroom against the default budget, the worst being `execute_treasury_transfer` at 17.9%.
+See [invariant §6.3](./INVARIANTS.md#6-liveness) and
+[TESTING.md](./TESTING.md#compute-cost).
 
 ### A5 — Double voting / vote replay
 
