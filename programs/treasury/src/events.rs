@@ -1,6 +1,13 @@
+//! Events are this program's public data interface: consumers reconstruct state
+//! by decoding these from transaction logs rather than by reading accounts. They
+//! derive `Clone`/`Debug`/`PartialEq` so a consumer can hold, compare and test
+//! against them — `#[event]` alone provides only the Borsh pair. See
+//! [`indexer/`](../../../../indexer).
+
 use anchor_lang::prelude::*;
 
 #[event]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TreasuryInitialized {
     pub treasury: Pubkey,
     pub governance_executor: Pubkey,
@@ -11,6 +18,7 @@ pub struct TreasuryInitialized {
 }
 
 #[event]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Deposited {
     pub treasury: Pubkey,
     pub depositor: Pubkey,
@@ -20,6 +28,7 @@ pub struct Deposited {
 }
 
 #[event]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Spent {
     pub treasury: Pubkey,
     pub destination: Pubkey,
@@ -30,6 +39,7 @@ pub struct Spent {
 }
 
 #[event]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StreamCreated {
     pub treasury: Pubkey,
     pub stream: Pubkey,
@@ -43,6 +53,7 @@ pub struct StreamCreated {
 }
 
 #[event]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StreamClaimed {
     pub treasury: Pubkey,
     pub stream: Pubkey,
@@ -53,6 +64,7 @@ pub struct StreamClaimed {
 }
 
 #[event]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StreamRevoked {
     pub treasury: Pubkey,
     pub stream: Pubkey,
@@ -65,6 +77,7 @@ pub struct StreamRevoked {
 }
 
 #[event]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SpendCapChanged {
     pub treasury: Pubkey,
     pub old_cap: u64,
@@ -74,6 +87,7 @@ pub struct SpendCapChanged {
 }
 
 #[event]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GovernanceExecutorChanged {
     pub treasury: Pubkey,
     pub previous_executor: Pubkey,

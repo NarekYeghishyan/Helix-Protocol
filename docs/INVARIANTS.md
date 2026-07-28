@@ -202,7 +202,7 @@ a 31-CU residual it bounds but does not explain.
 
 ```bash
 anchor build 2>&1 | tee build.log && grep -i "stack offset" build.log  # must be empty
-cargo test --workspace          # 124 tests: unit + doc + runtime
+cargo test --workspace          # 154 tests: unit + doc + runtime
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 

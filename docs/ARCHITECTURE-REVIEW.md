@@ -212,6 +212,21 @@ the count genuinely is not a variable — but "flat" was the wrong word for what
 "logarithmic in staked value, constant in staker count". See
 [TESTING.md](./TESTING.md#compute-cost).
 
+**W-8 — Two events were not self-sufficient. Both fixed.** Building the indexer exposed a
+property nobody had stated: an event that cannot be folded into state *without
+recomputation* is an incomplete event. `Unstaked` reported the amount withdrawn and the
+principal remaining, but not the position's remaining vote weight — so reconstructing
+`pool.total_weighted` off chain meant re-running `LockTier::apply_weight`, a second
+implementation of the weight table that agrees with the program right up until the table
+changes, and then disagrees silently. It now carries `weighted_amount`. Applied across all
+34 events, that was the only one which failed the rule.
+
+The second was subtler and was found by a test bug rather than by review: an analytics
+figure computed from history the indexer had not seen returned `0` and looked like a
+fact. A dashboard would have shown an empty treasury with complete confidence. Entities
+materialised by a non-creation event are now recorded, so "best available" and "complete"
+are distinguishable. See [`indexer/README.md`](../indexer/README.md).
+
 **W-6 — Token metadata is not initialised.** The mint is Token-2022 but has no on-chain
 name or symbol, needing the metadata extension CPI plus a realloc for variable-length
 fields. Cosmetic for the protocol, immediately visible in every wallet.

@@ -1,0 +1,26 @@
+[package]
+name = "helix-indexer"
+description = "Reconstructs Helix protocol state from the event log the programs emit."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+anchor-lang = { workspace = true }
+
+# The programs themselves, for their event types and their arithmetic.
+#
+# This is the whole reason the indexer is written in Rust. A separate client
+# re-declares the event schema and re-implements any derived figure, and the two
+# copies drift the first time a program changes — silently, because nothing
+# compares them. Here the event structs *are* the program's structs, the weight
+# table *is* the program's weight table, and a schema change that the indexer has
+# not accounted for is a compile error.
+helix-token-manager = { path = "../programs/token-manager", features = ["no-entrypoint"] }
+helix-staking = { path = "../programs/staking", features = ["no-entrypoint"] }
+helix-governance = { path = "../programs/governance", features = ["no-entrypoint"] }
+helix-treasury = { path = "../programs/treasury", features = ["no-entrypoint"] }
+
+# Anchor writes event payloads as base64 on `Program data:` lines.
+base64 = "0.22"

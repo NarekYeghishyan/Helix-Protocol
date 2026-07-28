@@ -111,6 +111,19 @@ impl TestEnv {
         self.dispatch(instructions, extra_signers).map(|_| ())
     }
 
+    /// Sends and returns the full transaction metadata — logs included.
+    ///
+    /// The logs are what an indexer consumes on a real cluster, so this is how
+    /// the indexer gets tested against the real programs without one.
+    pub fn send_metered(
+        &mut self,
+        instructions: &[Instruction],
+        extra_signers: &[&Keypair],
+    ) -> TransactionMetadata {
+        self.dispatch(instructions, extra_signers)
+            .unwrap_or_else(|e| panic!("transaction failed: {e}"))
+    }
+
     /// Sends and returns the compute units the transaction consumed.
     ///
     /// The runtime reports one accumulated figure per transaction, so this is only

@@ -1,8 +1,15 @@
+//! Events are this program's public data interface: consumers reconstruct state
+//! by decoding these from transaction logs rather than by reading accounts. They
+//! derive `Clone`/`Debug`/`PartialEq` so a consumer can hold, compare and test
+//! against them — `#[event]` alone provides only the Borsh pair. See
+//! [`indexer/`](../../../../indexer).
+
 use anchor_lang::prelude::*;
 
 use crate::state::LockTier;
 
 #[event]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PoolInitialized {
     pub pool: Pubkey,
     pub authority: Pubkey,
@@ -12,6 +19,7 @@ pub struct PoolInitialized {
 }
 
 #[event]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Staked {
     pub pool: Pubkey,
     pub position: Pubkey,
@@ -30,6 +38,7 @@ pub struct Staked {
 }
 
 #[event]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Unstaked {
     pub pool: Pubkey,
     pub position: Pubkey,
@@ -37,10 +46,21 @@ pub struct Unstaked {
     pub amount: u64,
     /// Principal left in the position; zero means it was closed.
     pub remaining: u64,
+    /// Vote weight left in the position, so a consumer never has to recompute
+    /// it from `remaining` and the tier.
+    ///
+    /// Added when the indexer was built. Without it, reconstructing
+    /// `pool.total_weighted` from the event stream means re-running
+    /// `LockTier::apply_weight` off chain — a second implementation of the
+    /// weight table that agrees with the program until the day the table
+    /// changes, and then disagrees silently. An event that cannot be folded into
+    /// state without recomputation is an incomplete event.
+    pub weighted_amount: u64,
     pub timestamp: i64,
 }
 
 #[event]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RewardsClaimed {
     pub pool: Pubkey,
     pub position: Pubkey,
@@ -50,6 +70,7 @@ pub struct RewardsClaimed {
 }
 
 #[event]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RewardsFunded {
     pub pool: Pubkey,
     pub funder: Pubkey,
@@ -59,6 +80,7 @@ pub struct RewardsFunded {
 }
 
 #[event]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RewardRateChanged {
     pub pool: Pubkey,
     pub old_rate: u64,
@@ -68,6 +90,7 @@ pub struct RewardRateChanged {
 }
 
 #[event]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PoolPauseToggled {
     pub pool: Pubkey,
     pub paused: bool,
@@ -75,6 +98,7 @@ pub struct PoolPauseToggled {
 }
 
 #[event]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AuthorityTransferProposed {
     pub pool: Pubkey,
     pub current_authority: Pubkey,
@@ -83,6 +107,7 @@ pub struct AuthorityTransferProposed {
 }
 
 #[event]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AuthorityTransferAccepted {
     pub pool: Pubkey,
     pub previous_authority: Pubkey,

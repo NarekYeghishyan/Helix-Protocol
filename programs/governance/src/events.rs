@@ -1,8 +1,15 @@
+//! Events are this program's public data interface: consumers reconstruct state
+//! by decoding these from transaction logs rather than by reading accounts. They
+//! derive `Clone`/`Debug`/`PartialEq` so a consumer can hold, compare and test
+//! against them — `#[event]` alone provides only the Borsh pair. See
+//! [`indexer/`](../../../../indexer).
+
 use anchor_lang::prelude::*;
 
 use crate::state::{ProposalAction, ProposalState, VoteChoice};
 
 #[event]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RealmInitialized {
     pub realm: Pubkey,
     pub authority: Pubkey,
@@ -16,6 +23,7 @@ pub struct RealmInitialized {
 }
 
 #[event]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProposalCreated {
     pub realm: Pubkey,
     pub proposal: Pubkey,
@@ -27,6 +35,7 @@ pub struct ProposalCreated {
 }
 
 #[event]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProposalActivated {
     pub proposal: Pubkey,
     pub voting_starts_at: i64,
@@ -37,6 +46,7 @@ pub struct ProposalActivated {
 }
 
 #[event]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VoteCast {
     pub proposal: Pubkey,
     pub position: Pubkey,
@@ -50,6 +60,7 @@ pub struct VoteCast {
 }
 
 #[event]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProposalFinalized {
     pub proposal: Pubkey,
     pub outcome: ProposalState,
@@ -61,6 +72,7 @@ pub struct ProposalFinalized {
 }
 
 #[event]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProposalQueued {
     pub proposal: Pubkey,
     /// Earliest execution time.
@@ -71,6 +83,7 @@ pub struct ProposalQueued {
 }
 
 #[event]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProposalExecuted {
     pub proposal: Pubkey,
     pub action: ProposalAction,
@@ -78,6 +91,7 @@ pub struct ProposalExecuted {
 }
 
 #[event]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProposalCancelled {
     pub proposal: Pubkey,
     pub guardian: Pubkey,

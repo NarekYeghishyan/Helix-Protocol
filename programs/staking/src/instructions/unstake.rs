@@ -151,6 +151,7 @@ pub fn unstake(ctx: Context<Unstake>, amount: u64) -> Result<()> {
         owner: ctx.accounts.owner.key(),
         amount,
         remaining,
+        weighted_amount: new_weighted,
         timestamp: now,
     });
 

@@ -19,9 +19,9 @@ says how much to trust each one.
 |-------|-------|--------|
 | 0 | Toolchain, workspace, CI | ✅ Done |
 | 1 | Four programs, unit-tested | ✅ Done |
-| 2 | Integration tests against a validator | ✅ Done — 44 runtime tests; found and fixed F-8 |
-| 3 | Devnet deployment + verifiable builds | ⬜ Not started — **highest priority** |
-| 4 | Indexer + analytics API | ⬜ Not started |
+| 2 | Integration tests against a validator | ✅ Done — 66 runtime tests; found and fixed F-8 |
+| 3 | Devnet deployment + verifiable builds | ◐ Bootstrap measured, F-9 fixed; the deploy itself is blocked on devnet funding — **highest priority** |
+| 4 | Indexer + analytics API | ◐ Decode and projection built and reconciled against the chain; ingestion and storage not started |
 | 5 | Dashboard + wallet integration | ⬜ Not started |
 | 6 | Fuzzing + external audit prep | ◐ Compute benchmarked (§6.3 measured); fuzzing not started |
 | 7 | Governance migration (burn the admin keys) | ⬜ Not started |
@@ -46,7 +46,9 @@ programs creates confidence that the system does not yet deserve.
 
 ---
 
-## Phase 2 — Integration tests *(≈4–6 days, high confidence)*
+## Phase 2 — Integration tests
+
+*≈4–6 days, high confidence*
 
 The top priority. Everything after this depends on it.
 
@@ -87,7 +89,9 @@ behaviour. Time-dependent tests need clock warping, which is why unit tests take
 as a parameter rather than reading `Clock` directly — that decision was made for this
 phase.
 
-## Phase 3 — Devnet deployment *(≈2–3 days, high confidence)*
+## Phase 3 — Devnet deployment
+
+*≈2–3 days, high confidence*
 
 | Milestone | Deliverable | Est. |
 |---|---|---|
@@ -115,27 +119,49 @@ deployment needs roughly double that at peak for the buffers. Devnet's CLI airdr
 capped at 2 SOL and rate-limits hard, so this needs
 [faucet.solana.com](https://faucet.solana.com) rather than `solana airdrop`.
 
-## Phase 4 — Indexer and analytics API *(≈4–5 days, medium confidence)*
+## Phase 4 — Indexer and analytics API
 
-Every state transition already emits an event carrying an on-chain timestamp, so history
-is reconstructable without polling account state. Nothing is built yet.
+*≈4–5 days, medium confidence*
 
-| Milestone | Deliverable | Est. |
-|---|---|---|
-| 4.1 | Event subscriber (Anchor `EventParser` over logs), with reorg handling | 1.5d |
-| 4.2 | Postgres schema + idempotent upserts keyed on `(signature, log_index)` | 1d |
-| 4.3 | Backfill from genesis slot, resumable | 1d |
-| 4.4 | Read API: TVL, APR, staker distribution, proposal history, treasury flows | 1d |
+Every state transition emits an event carrying an on-chain timestamp, so history is
+reconstructable without polling account state. The decoding half is built and verified;
+nothing yet talks to a cluster or a database.
 
-**Recommendation:** make ingestion idempotent from the start and treat every event as
-possibly-redelivered. Confirmed-commitment logs can still be rolled back, and an indexer
-that assumes exactly-once delivery reports wrong numbers precisely when something has
-gone wrong elsewhere.
+| Milestone | Deliverable | Est. | Status |
+|---|---|---|---|
+| 4.0 | Event decoding and log attribution, reconciled against the chain | 1.5d | ✅ Done |
+| 4.1 | Event subscriber over RPC logs, with reorg handling | 1.5d | ⬜ |
+| 4.2 | Postgres schema + idempotent upserts keyed on `(signature, log_index)` | 1d | ◐ Schema written, binding not |
+| 4.3 | Backfill from genesis slot, resumable | 1d | ⬜ |
+| 4.4 | Read API: TVL, APR, staker distribution, proposal history, treasury flows | 1d | ◐ Computed in-process, not served |
 
-Medium confidence because it depends on RPC provider behaviour (log retention, webhook
-reliability) that is hard to predict from outside.
+**4.0 is deliberately the half that can be verified without a cluster.** Ingestion cannot
+be tested offline; decoding and folding are where the bugs that corrupt analytics
+actually live. [`indexer/`](../indexer) therefore contains no RPC client and no database
+driver, and [`indexer_reconciliation.rs`](../tests/integration/tests/indexer_reconciliation.rs)
+runs real transactions, captures the runtime's own logs, and compares the resulting
+projection to the accounts those transactions wrote — field by field.
 
-## Phase 5 — Dashboard *(≈5–7 days, medium confidence)*
+It found two things. `Unstaked` did not carry the position's remaining vote weight, so
+`pool.total_weighted` could only be reconstructed by re-running the tier table off chain —
+a second implementation that agrees with the program until the table changes. And
+`treasury_balance` silently returned 0 for a treasury whose deposits predated the indexer,
+with nothing marking the figure as computed from partial history. Both fixed; see
+[W-8](./ARCHITECTURE-REVIEW.md#weaknesses).
+
+**Recommendation, now acted on:** make ingestion idempotent from the start and treat
+every event as possibly-redelivered. Confirmed-commitment logs can still be rolled back,
+and an indexer that assumes exactly-once delivery reports wrong numbers precisely when
+something has gone wrong elsewhere. The projection is keyed on `(signature, log_index)`,
+and events carry running totals rather than deltas so that assignment — which is
+replay-safe — beats accumulation, which is not.
+
+Medium confidence on the remainder because it depends on RPC provider behaviour (log
+retention, webhook reliability) that is hard to predict from outside.
+
+## Phase 5 — Dashboard
+
+*≈5–7 days, medium confidence*
 
 | Milestone | Deliverable | Est. |
 |---|---|---|
@@ -148,7 +174,9 @@ reliability) that is hard to predict from outside.
 surface the decoded Anchor error rather than a raw code. The specific error enums exist
 so the UI can say "position is still locked" instead of "custom program error: 0x1771".
 
-## Phase 6 — Fuzzing and audit prep *(≈4–6 days, low confidence)*
+## Phase 6 — Fuzzing and audit prep
+
+*≈4–6 days, low confidence*
 
 | Milestone | Deliverable | Est. | Status |
 |---|---|---|---|
@@ -169,7 +197,9 @@ varying with a randomly generated mint.
 Low confidence on the rest: fuzzing finds what it finds. The 1–2 days for 6.3 assumes the
 findings are shallow, which is exactly the assumption fuzzing exists to test.
 
-## Phase 7 — Governance migration *(≈2 days, high confidence)*
+## Phase 7 — Governance migration
+
+*≈2 days, high confidence*
 
 The point of the whole design, and easy to leave undone forever.
 

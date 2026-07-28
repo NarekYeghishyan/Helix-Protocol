@@ -8,7 +8,7 @@ Rust with the Anchor framework.
 [![Solana](https://img.shields.io/badge/solana-3.x-purple)](https://solana.com)
 [![License](https://img.shields.io/badge/license-Apache--2.0-green)](./LICENSE)
 
-> **Status: unaudited. Not deployed.** All four programs build to BPF and pass 124 tests
+> **Status: unaudited. Not deployed.** All four programs build to BPF and pass 154 tests
 > locally, including runtime tests that execute the full governance → treasury authority
 > chain and a real Token-2022 mint with transfer fees. The analytics stack and a devnet
 > deployment are scoped in [ROADMAP.md](./docs/ROADMAP.md). Nothing here has held real
@@ -120,26 +120,31 @@ programs/
   staking/         lock tiers, reward accumulator, position accounting
   governance/      proposal lifecycle, lock-gated voting, timelock
   treasury/        vault, vesting streams, per-epoch spend limits
-scripts/           toolchain bootstrap, program key generation
+indexer/           event decoding and state projection, reconciled against the chain
+tests/integration/ runtime tests against the real BPF programs via LiteSVM
+scripts/           toolchain bootstrap, program keys, documentation link check
 docs/              the five deliverables above
-.github/workflows/ fmt, clippy -D warnings, cargo-audit, build, test
+.github/workflows/ fmt, clippy -D warnings, doc links, cargo-audit, build, test
 ```
+
+`package.json` is scaffolding for the Phase 5 dashboard. There are no TypeScript sources
+yet, so CI does not pretend to lint any.
 
 ## Testing
 
 ```bash
 anchor build 2>&1 | tee build.log
 grep -i "stack offset" build.log   # must be empty — anchor build exits 0 even when it isn't
-cargo test --workspace             # 124 tests: unit + doc + runtime
+cargo test --workspace             # 154 tests: unit + doc + runtime
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all -- --check
 ```
 
-**65 unit tests** cover the reward accumulator, vesting schedule, tally arithmetic and
+**88 unit tests** cover the reward accumulator, vesting schedule, tally arithmetic and
 every state machine directly — including a differential check that fixed-point rounding
 never favours the user over the pool.
 
-**59 runtime tests** ([`tests/integration/`](./tests/integration)) execute the real BPF
+**66 runtime tests** ([`tests/integration/`](./tests/integration)) execute the real BPF
 programs against the real Token-2022 program via LiteSVM: the full authority chain (a
 passed, timelocked proposal moving treasury funds), the staking withdrawal paths, and a
 negative test for each attack in the [threat model](./docs/THREAT-MODEL.md) — direct
@@ -151,10 +156,26 @@ row in [INVARIANTS.md](./docs/INVARIANTS.md). That table is kept honest delibera
 claim no test can falsify is documentation, not a guarantee.
 
 Writing those tests found a real architectural hole. Vesting, the treasury spend cap and
-governance migration are all **unreachable on chain** — governance has no `ProposalAction`
+governance migration were all **unreachable on chain** — governance had no `ProposalAction`
 variant that produces the executor signature for them. Every unit test passed and the code
 compiled; the gap was in what governance is *able to ask for*.
 [F-8](./docs/SECURITY-ASSESSMENT.md#f-8--governance-gated-treasury-instructions-are-unreachable).
+
+## Analytics
+
+[`indexer/`](./indexer) reconstructs protocol state from the event stream — and proves it
+matches. Real transactions, the runtime's own logs, and the resulting projection compared
+to the accounts those transactions wrote, field by field
+([`indexer_reconciliation.rs`](./tests/integration/tests/indexer_reconciliation.rs)).
+
+It is written in Rust and links the program crates directly, so the event types *are* the
+programs' types and derived figures use the programs' arithmetic. A client that re-declares
+the schema from an IDL has a second copy to keep in sync, and nothing compares them.
+
+Building it found that `Unstaked` was not self-sufficient: reconstructing
+`pool.total_weighted` meant re-running the lock-tier table off chain, which would agree with
+the program until the day the table changed. The rule it produced — **an event that cannot
+be folded into state without recomputation is an incomplete event** — now applies to all 34.
 
 ## License
 

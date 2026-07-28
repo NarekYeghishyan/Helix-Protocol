@@ -10,7 +10,7 @@ is bounded by the honesty of its coverage claims.
 ```bash
 anchor build                                                  # required first — the
                                                               # runtime tests load .so files
-cargo test --workspace                                        # 124 tests: unit + doc + runtime
+cargo test --workspace                                        # 154 tests: unit + doc + runtime
 cargo test -p helix-staking --lib                             # one program's unit tests
 cargo test -p helix-staking --lib -- --nocapture rounding     # one test, with output
 
@@ -30,7 +30,7 @@ status code. See [F-3](./SECURITY-ASSESSMENT.md#f-3--sbf-stack-frame-overflow).
 
 ## What is covered
 
-**65 unit tests** over pure functions and state machines, and **59 runtime tests** against
+**88 unit tests** over pure functions and state machines, and **66 runtime tests** against
 the real BPF programs.
 
 ### Unit tests
@@ -47,6 +47,9 @@ the real BPF programs.
 | Proposal lifecycle | 6 | Guardian veto window, terminal states, state gating, queued-proposal expiry |
 | Vesting | 9 | Cliff behaviour, linearity, truncation direction, and the three revocation properties |
 | Spend budget | 5 | Cap enforcement, rejection without mutation, rollover, no allowance accumulation |
+| Event decoding | 7 | Wire-format round trip, truncated and trailing-byte payloads rejected, decoding scoped to the emitting program |
+| Log attribution | 10 | CPI depth tracking, foreign programs ignored, truncation and undecodable payloads reported, compute lines not mistaken for frame exits |
+| Projection | 6 | Idempotent replay, identical events in one transaction kept distinct, orphan tracking, APR undefined on an empty pool |
 
 ### Runtime tests
 
@@ -60,6 +63,7 @@ the real BPF programs.
 | `bootstrap_atomicity.rs` | 3 | F-1's mitigation: the bootstrap fits one transaction (748 B / 17 accounts, asserted against the 1232-byte limit), and re-initialisation fails afterwards |
 | `token_admin_e2e.rs` | 7 | §5.2, §5.4, §5.9, §5.10 — the token-manager admin handover in real deployment order, and that governance then holds every admin power |
 | `compute_budget.rs` | 5 | §6.3 — compute measured across a 64× sweep in staker and voter count, plus a budget ceiling on every hot-path instruction |
+| `indexer_reconciliation.rs` | 7 | The [indexer's](../indexer) projection compared to on-chain accounts field by field, over the staking lifecycle, a fee-bearing mint, the governance lifecycle including nested CPI, replay, and partial history |
 
 ### Testing conventions worth copying
 
@@ -128,7 +132,7 @@ thousand units more.
 | | 1 staker | 4 | 16 | 64 |
 |---|---:|---:|---:|---:|
 | `stake` | 24,261 | 24,261 | 24,261 | 24,261 |
-| `unstake` | 24,279 | 24,279 | 24,279 | 24,279 |
+| `unstake` | 24,289 | 24,289 | 24,289 | 24,289 |
 | `claim` | 30,697 | 30,939 | 30,940 | 30,941 |
 | `cast_vote` (by prior votes) | 15,019 | 15,019 | 15,019 | 15,019 |
 
@@ -248,6 +252,25 @@ The last line is the important one. Under the same mutation the plain-mint test 
 green, which is the entire argument for why unit tests could never have caught this class
 of bug. Worth repeating for any invariant that matters: **inject the failure and watch the
 test catch it.**
+
+The indexer's attribution was verified the same way. Folding events into the *outermost*
+program instead of the innermost — `stack.first()` for `stack.last()`, one word — turns
+5 unit tests and 2 reconciliation tests red:
+
+```text
+a_nested_cpi_attributes_each_event_to_its_own_program            FAILED
+the_indexed_proposal_matches_the_chain_through_execution         FAILED
+  the treasury spend was attributed to the wrong program, or lost
+  left: 0   right: 2500000
+
+the_indexed_pool_matches_the_chain_through_a_full_staking_lifecycle  ok  <-- still passes
+indexed_tvl_follows_credited_amounts_on_a_fee_bearing_mint           ok  <-- still passes
+replaying_a_transaction_double_counts_nothing                        ok  <-- still passes
+```
+
+Same shape again: the three that stay green are single-program flows, where the innermost
+program *is* the outermost and the two rules are indistinguishable. That is the whole
+argument for testing the nested case separately.
 
 ## CI
 

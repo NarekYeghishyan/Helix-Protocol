@@ -19,6 +19,10 @@ helix-staking = { path = "../../programs/staking", features = ["no-entrypoint"] 
 helix-governance = { path = "../../programs/governance", features = ["no-entrypoint"] }
 helix-treasury = { path = "../../programs/treasury", features = ["no-entrypoint"] }
 
+# The indexer is verified here rather than in its own crate: proving it agrees
+# with the chain needs a chain, and this is where one is.
+helix-indexer = { path = "../../indexer" }
+
 # Pinned deliberately. litesvm 0.14+ tracks a newer Solana than anchor-lang 1.1.2
 # does, which puts two versions of `wincode` in the graph and breaks the sysvar
 # traits with an error that reads like a bug in litesvm rather than a version

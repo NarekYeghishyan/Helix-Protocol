@@ -1502,6 +1502,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "helix-indexer"
+version = "0.1.0"
+dependencies = [
+ "anchor-lang",
+ "base64 0.22.1",
+ "helix-governance",
+ "helix-staking",
+ "helix-token-manager",
+ "helix-treasury",
+]
+
+[[package]]
 name = "helix-integration-tests"
 version = "0.1.0"
 dependencies = [
@@ -1509,6 +1521,7 @@ dependencies = [
  "anchor-spl",
  "bincode",
  "helix-governance",
+ "helix-indexer",
  "helix-staking",
  "helix-token-manager",
  "helix-treasury",

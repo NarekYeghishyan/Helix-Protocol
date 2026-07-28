@@ -43,17 +43,11 @@ jobs:
       - name: Documentation links
         run: python3 scripts/check-doc-links.py
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 9
-
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm lint
+      # No JavaScript or TypeScript sources exist yet, so there is nothing to
+      # lint and no lockfile to install from — `pnpm install --frozen-lockfile`
+      # failed on every run. `package.json` stays because Anchor's tooling
+      # expects one; the lint steps come back in the same commit that adds the
+      # Phase 5 dashboard, with a lockfile.
 
   audit:
     name: Dependency audit
@@ -108,17 +102,12 @@ jobs:
           echo "$HOME/.avm/bin" >> "$GITHUB_PATH"
           avm use "$ANCHOR_VERSION"
 
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 9
-
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: pnpm
 
-      - run: pnpm install --frozen-lockfile
-
+      # Deliberately dependency-free — it uses only `node:crypto`, so there is
+      # nothing to install before it runs.
       - name: Generate program keypairs
         run: node scripts/gen-program-keys.mjs
 
