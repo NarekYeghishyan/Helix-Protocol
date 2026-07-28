@@ -34,7 +34,7 @@ graph TD
     TR["treasury<br/><i>owns protocol funds</i>"]
 
     TM -->|"mint_to — PDA-signed CPI,<br/>caller must be a registered minter"| ST
-    ST -->|"position weight,<br/>gated on lock_end"| GV
+    ST -->|"position weight — must outlive the vote<br/>AND predate the snapshot"| GV
     GV -->|"spend — only after quorum<br/>+ timelock, PDA-signed CPI"| TR
     GV -->|"set_reward_rate"| ST
 ```
@@ -99,6 +99,7 @@ Structured as the five deliverables of an architecture-and-enhancement engagemen
 | [ROADMAP.md](./docs/ROADMAP.md) | **3 — Technical roadmap.** Prioritised phases, milestones, estimates, and an explicit list of what is *not* built |
 | [ARCHITECTURE.md](./docs/ARCHITECTURE.md) | **4 — Enhancements.** How the four programs compose and why each design choice was made |
 | [INVARIANTS.md](./docs/INVARIANTS.md) · [TESTING.md](./docs/TESTING.md) · [RUNBOOK.md](./docs/RUNBOOK.md) | **5 — Documentation.** Invariants mapped to tests, testing procedures, deployment runbook |
+| [AUDIT-READINESS.md](./docs/AUDIT-READINESS.md) | Self-audit: which technique found which finding, what an auditor need not re-derive, and the brief |
 | [THREAT-MODEL.md](./docs/THREAT-MODEL.md) | Attacks defended, trust assumptions, and what is explicitly out of scope |
 
 ## Quick start

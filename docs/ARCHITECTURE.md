@@ -18,7 +18,7 @@ graph TD
     U -->|"create proposal / vote"| GV
 
     TM -->|"mint_to — PDA-signed CPI<br/>caller must be a registered minter,<br/>within its epoch cap"| ST
-    ST -->|"position weight, only if<br/>lock_end ≥ voting_ends_at"| GV
+    ST -->|"position weight, only if the position<br/>outlives the vote AND predates the snapshot"| GV
     GV -->|"spend — PDA-signed CPI,<br/>only after quorum + timelock"| TR
     GV -->|"set_reward_rate — PDA-signed CPI"| ST
     TR -->|"vesting claim"| U
@@ -41,8 +41,13 @@ Creates and governs the HLX mint.
 - Admin transfer is **two-step** (`propose_admin` → `accept_admin`). A single-step
   transfer to a typo'd address is unrecoverable; this is a small change that removes a
   whole class of fatal operator error.
-- The mint is **Token-2022**, created with a metadata pointer extension pointing at
-  itself.
+- The admin surface is reachable by proposal, so the role can be handed to governance
+  along with every power it carries — see
+  [F-9](./SECURITY-ASSESSMENT.md#f-9--token-manager-admin-cannot-be-handed-to-governance).
+- The mint is **Token-2022**. It carries **no metadata extension yet**: on-chain name and
+  symbol need the metadata-pointer extension plus a realloc for the variable-length
+  fields, and that is Phase 3 in [ROADMAP.md](./ROADMAP.md). Wallets currently show the
+  mint address.
 
 ### Why Token-2022 rather than the legacy token program
 
@@ -124,20 +129,39 @@ available regardless of lock state — locking your principal should not lock yo
 
 ## 3. governance
 
-### Vote weight, and why flash loans do not work here
+### Vote weight: two gates, and why both are needed
 
-The standard attack on token governance: borrow a large balance, vote, repay, all in
-one transaction. Two common defences are snapshots (expensive on Solana — you need
-historical state) and vote-escrow.
+A vote is admitted only if its position passes **both** of these:
 
-Helix uses a third, which falls out of the staking design for free:
+> 1. `position.lock_end >= proposal.voting_ends_at` — the lock gate
+> 2. `position.position_id < proposal.position_count_snapshot` — the electorate gate
 
-> A position may only vote on a proposal if `position.lock_end >= proposal.voting_ends_at`.
+**The lock gate** answers the standard attack on token governance: borrow a large
+balance, vote, repay, all in one transaction. The usual defences are historical
+snapshots (expensive on Solana) and vote-escrow. Helix uses neither — you can only vote
+with stake you are contractually unable to withdraw before the vote closes, so a
+flash-loaned position has `lock_end == now` and is refused. No snapshot history, no
+extra accounts, one comparison. It is cheap precisely because the staking design was
+chosen to make it cheap.
 
-You can only vote with stake you are contractually unable to withdraw before the vote
-closes. A flash-loaned position has `lock_end == now` and is rejected. No snapshot
-history, no extra accounts, and the rule is one comparison — the kind of defence that
-is cheap precisely because the surrounding design was chosen to make it cheap.
+**The electorate gate** answers a different attack, and it was missing until stateful
+fuzzing found it. `activate` fixes `total_weight_snapshot` as the quorum denominator.
+Without the second gate, weight staked *after* that moment still voted — adding to the
+numerator of the quorum test while the denominator stayed where it was. Buy enough after
+a proposal opens and it clears a threshold measured against an electorate that no longer
+exists.
+
+The two are independent, and that is the whole lesson. The attacking position in the
+second case is locked for 180 days and satisfies the lock gate comfortably. **Gate 1 is
+commitment forward in time; gate 2 is membership backward in time.** A system can have
+one without the other, and this one did.
+[F-10](./SECURITY-ASSESSMENT.md#f-10--post-snapshot-weight-could-vote).
+
+Position ids come from a pool-wide monotonic counter, so `position_id < snapshot` is
+exactly "this position existed when the denominator was measured". Comparing `created_at`
+against `voting_starts_at` is the obvious alternative and is weaker: timestamps have
+one-second granularity, so a stake landing in the same second as activation slips
+through.
 
 ### Lifecycle
 
@@ -169,7 +193,10 @@ so the state would be unreliable exactly when it mattered.
 function of state already on chain, so there is nothing to decide, only to record. Gating
 them would let whoever held the permission strand a proposal they disliked forever.
 
-- **Quorum**: `for + against + abstain >= quorum_bps` of total weighted stake.
+- **Quorum**: `for + against + abstain >= quorum_bps` of `total_weight_snapshot` — the
+  pool's total weight as it stood at `activate`, not as it stands now. Fixing the
+  denominator is what makes the threshold mean something; the electorate gate above is
+  what keeps the numerator describing the same set of stakers.
 - **Approval**: `for > against` and `for >= approval_bps` of (`for + against`).
   Abstain counts toward quorum but not approval — the standard Compound/OZ semantics.
 - **Timelock**: `Succeeded → Queued` sets `eta = now + timelock_delay`. Nothing
@@ -189,9 +216,12 @@ making each position's vote exactly once-only.
 
 Holds protocol funds and vesting streams.
 
-- The vault authority is `["treasury_authority", config]`, and the config records a
-  single `governing_program` + `governance_realm`. Spend instructions verify the
-  caller is the governance execution PDA for that realm.
+- The vault is `["vault", treasury]` and its authority is
+  `["vault_authority", treasury]`. The `Treasury` account records exactly one privileged
+  address, `governance_executor`, and every spending instruction is `has_one =
+  governance_executor` plus `Signer`. There is no admin override, and
+  `set_governance_executor` can only be called by the *current* executor — so migrating
+  governance is itself a governed act.
 - **Vesting streams**: linear release with an optional cliff, created only by
   governance, claimable only by the beneficiary, revocable only by governance. Claimed
   amounts are tracked so a revoke cannot claw back already-vested tokens.
@@ -230,9 +260,18 @@ runtime. Boxing moves the deserialised accounts to the heap. CI greps the build 
 
 **Events on every state transition**, each carrying an on-chain timestamp so replaying the
 log is deterministic. This is what lets an indexer reconstruct history rather than only
-the present state, without polling accounts. The indexer and dashboard that consume them
-are Phases 4 and 5 of [ROADMAP.md](./ROADMAP.md) and are not built yet — the events exist
-first because retrofitting them later means losing all history before the retrofit.
+the present state, without polling accounts.
+
+[`indexer/`](../indexer) consumes them and is checked against the chain field by field —
+real transactions, the runtime's own logs, the resulting projection compared to the
+accounts those transactions wrote. Building it produced the rule the event set is now held
+to: **an event that cannot be folded into state without recomputation is an incomplete
+event.** `Unstaked` failed it — reconstructing `pool.total_weighted` meant re-running the
+lock-tier table off chain, a second implementation that agrees until the table changes —
+and now carries `weighted_amount`. The dashboard over it is Phase 5.
+
+The events were written before anything consumed them, because retrofitting them later
+means losing all history before the retrofit.
 
 **Errors are specific.** One variant per failure mode, not a general `InvalidArgument`.
 An error enum is the program's user interface when something goes wrong.

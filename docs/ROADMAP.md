@@ -19,11 +19,11 @@ says how much to trust each one.
 |-------|-------|--------|
 | 0 | Toolchain, workspace, CI | ✅ Done |
 | 1 | Four programs, unit-tested | ✅ Done |
-| 2 | Integration tests against a validator | ✅ Done — 66 runtime tests; found and fixed F-8 |
+| 2 | Integration tests against a validator | ✅ Done — 74 runtime tests; found and fixed F-8 |
 | 3 | Devnet deployment + verifiable builds | ◐ Bootstrap measured, F-9 fixed; the deploy itself is blocked on devnet funding — **highest priority** |
 | 4 | Indexer + analytics API | ◐ Decode and projection built and reconciled against the chain; ingestion and storage not started |
 | 5 | Dashboard + wallet integration | ⬜ Not started |
-| 6 | Fuzzing + external audit prep | ◐ Compute benchmarked, stateful fuzzing running and it found F-10; audit not yet scoped |
+| 6 | Fuzzing + external audit prep | ✅ Done — compute benchmarked, fuzzing found F-10, audit scoped in [AUDIT-READINESS.md](./AUDIT-READINESS.md) |
 | 7 | Governance migration (burn the admin keys) | ⬜ Not started |
 
 ---
@@ -183,8 +183,8 @@ so the UI can say "position is still locked" instead of "custom program error: 0
 | 6.0 | **Compute benchmarks** against staker and voter count, to measure invariant §6.3 rather than argue it | 1d | ✅ Done |
 | 6.1 | Stateful fuzzing over staking and governance | 2d | ✅ Done — **not** with Trident, see below |
 | 6.2 | Invariant harness: assert every [INVARIANTS.md](./INVARIANTS.md) property after each fuzz step | 1.5d | ✅ Done — found [F-10](./SECURITY-ASSESSMENT.md#f-10--post-snapshot-weight-could-vote) |
-| 6.3 | Self-audit report; resolve findings | 1–2d | ⬜ |
-| 6.4 | Scope and brief an external audit | 0.5d | ⬜ |
+| 6.3 | Self-audit report; resolve findings | 1–2d | ✅ Done — [AUDIT-READINESS.md](./AUDIT-READINESS.md) |
+| 6.4 | Scope and brief an external audit | 0.5d | ✅ Done — brief in the same document |
 
 6.0 was pulled forward out of order because it needed nothing that Phase 3 is blocked on.
 It confirmed §6.3 and produced the compute table in

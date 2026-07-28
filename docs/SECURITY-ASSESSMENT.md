@@ -6,10 +6,15 @@ assessment, recommended mitigations.*
 **Scope:** the four programs under [`programs/`](../programs) at commit time.
 **Method:** manual review of every instruction's authority checks and arithmetic;
 invariant derivation ([INVARIANTS.md](./INVARIANTS.md)); adversarial modelling
-([THREAT-MODEL.md](./THREAT-MODEL.md)); `cargo clippy -D warnings`; `cargo audit`.
-**Not performed:** external audit, fuzzing, formal verification, runtime testing of
-cross-program flows. See [Limitations](#limitations-of-this-assessment) — they are
-material.
+([THREAT-MODEL.md](./THREAT-MODEL.md)); 74 runtime tests against the real BPF programs;
+stateful fuzzing with the invariants as the oracle; `cargo clippy -D warnings`;
+`cargo audit`.
+**Not performed:** external audit, formal verification, any execution against a real
+cluster. See [Limitations](#limitations-of-this-assessment) — they are material.
+
+Which technique found which finding is tabulated in
+[AUDIT-READINESS.md](./AUDIT-READINESS.md), because that is the part which says where the
+*remaining* risk is likely to be.
 
 ---
 
@@ -55,7 +60,7 @@ through the minter registry.
 | `update_realm_params` | realm authority | `has_one = authority` + `Signer` |
 | `create_proposal` | holder ≥ `min_weight_to_propose` | position `has_one = owner`, owner must equal the signer, weight compared |
 | `activate_proposal` | **anyone** | intentional; pure function of chain state |
-| `cast_vote` | position owner | owner constraint + `Signer` + **lock gate** + `init` on the vote record |
+| `cast_vote` | position owner | owner constraint + `Signer` + **lock gate** + **electorate gate** + `init` on the vote record |
 | `finalize_proposal` / `queue_proposal` | **anyone** | intentional; pure functions of chain state |
 | `cancel_proposal` | guardian | `has_one = guardian` + `Signer`, and `is_cancellable()` |
 | `execute_*` | **anyone**, after `eta` | intentional; the timelock and state machine are the gate |
@@ -106,7 +111,7 @@ Severity = impact × likelihood, CVSS-style but judged rather than computed.
 | F-1 | Initialisers are front-runnable | **Medium** | Open — mitigated operationally |
 | F-2 | `unpaid_liability` used deposits as liability, making any non-zero reward rate unsettable | **High** | **Fixed** |
 | F-3 | SBF stack frame overflow in three `Accounts` structs | **High** | **Fixed** |
-| F-4 | Cross-program flows unverified at runtime | **High** | Largely resolved — authority chain verified end to end; staking withdrawal and vesting remain |
+| F-4 | Cross-program flows unverified at runtime | **High** | **Fixed** — 74 runtime tests; the two named gaps, staking withdrawal and vesting, are covered |
 | F-5 | Upgrade authority not migrated to governance | **Critical** (if deployed) | Open — Phase 7 |
 | F-6 | Guardian key compromise causes governance denial of service | **Low** | Accepted |
 | F-7 | `Position` accounts are never closed | **Informational** | Open |
@@ -212,7 +217,7 @@ runtime. Fixed by boxing the large accounts. CI now greps the build log for
 
 ### F-4 — Cross-program flows unverified at runtime
 
-**Severity:** High · **Status:** partially resolved
+**Severity:** High · **Status:** fixed
 
 **Resolved:** the staking deposit path and the Token-2022 fee invariants (§1.1, §1.3,
 §2.1–§2.3) now run against real BPF programs and a real fee-bearing mint under LiteSVM.
@@ -235,10 +240,15 @@ The flash-loan defence (A1) is likewise now verified at runtime: an unlocked pos
 times the size of the committed stake is refused with `InsufficientLockDuration` and
 contributes zero weight.
 
-**Still open:** staking's withdrawal lifecycle (accrue → claim → unlock → unstake) and
-vesting token movement. Both are arithmetic that is unit-tested; what is unverified is the
-token transfer and account-state bookkeeping around it. Lower risk than what was closed,
-but not zero — `claim` and `unstake` are the paths users depend on to exit.
+**Since closed:** staking's withdrawal lifecycle (accrue → claim → unlock → unstake) and
+vesting token movement, the two gaps this finding named last. `staking_lifecycle.rs` and
+`vesting_e2e.rs` cover the token transfers and the account-state bookkeeping around them,
+and the fuzzer drives the same paths in random order with the solvency invariants checked
+after every operation.
+
+What replaces it is narrower and is tracked separately: nothing here has executed against
+a real cluster. LiteSVM is faithful to the runtime but is not a validator, so transaction
+fees, congestion, and reorgs remain unexercised — Phase 3.
 
 ### F-5 — Upgrade authority not migrated
 
