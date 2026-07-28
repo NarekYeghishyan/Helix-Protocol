@@ -15,7 +15,7 @@ An invariant with no test is a design intention, not a guarantee.
 
 Notation: `Σ` sums over all accounts of that type belonging to the pool/realm.
 
-**Current totals across 52 invariants: 44 ✅ · 3 ◐ · 5 ⬜.**
+**Current totals across 54 invariants: 48 ✅ · 2 ◐ · 4 ⬜.**
 
 Every user-facing flow is now exercised at runtime against the real BPF programs: staking
 deposit and withdrawal, reward accrual and claim, the full governance lifecycle, treasury
@@ -42,8 +42,13 @@ gap was in what governance is *able to ask for* — see
 [F-8](./SECURITY-ASSESSMENT.md#f-8--governance-gated-treasury-instructions-are-unreachable),
 now fixed, with §7.9 added to keep it fixed.
 
+The same defect appeared again in the token-manager
+([F-9](./SECURITY-ASSESSMENT.md#f-9--token-manager-admin-cannot-be-handed-to-governance)),
+and fixing it nearly produced a third instance — granting the realm the admin role without
+the admin's *powers*. §5.10 exists to pin that down.
+
 What remains ⬜ is compute benchmarking (§6.3), the deployment-time invariant §5.8, and
-three aggregate properties that need many accounts to be meaningful — all Phase 3 or 6.
+two aggregate properties that need many accounts to be meaningful — all Phase 3 or 6.
 
 ---
 
@@ -134,9 +139,11 @@ instruction. A runtime test attempting every other instruction as guardian would
 | # | Invariant | Test | Status |
 |---|-----------|------|--------|
 | 5.1 | Treasury funds move only under the governance executor's signature | `treasury_rejects_a_spend_that_is_not_from_governance`, `a_passed_proposal_moves_treasury_funds` | ✅ |
-| 5.2 | HLX is minted only by a registered minter, within its epoch cap | `accrues_within_cap`, `rejects_over_cap_without_mutating` | ◐ |
+| 5.2 | HLX is minted only by a registered minter, within its epoch cap | `governance_can_revoke_a_minter` (runtime), `accrues_within_cap` | ✅ |
 | 5.3 | No non-PDA address holds mint authority after `initialize_token` | `token_manager::mint_authority_is_pda` | ⬜ P2 |
-| 5.4 | Admin transfer requires both `propose` and `accept` | `token_manager::two_step_admin` | ⬜ P2 |
+| 5.4 | Admin transfer requires both `propose` and `accept` | `governance_can_accept_the_token_manager_admin` | ✅ |
+| 5.9 | A superseded admin retains no powers | `the_old_admin_loses_its_powers_after_handover` | ✅ |
+| 5.10 | Governance holds the *whole* admin surface, not just the role | `governance_can_pause_issuance_once_it_is_admin`, `governance_can_register_a_new_minter`, `governance_can_revoke_a_minter` | ✅ |
 | 5.5 | Every PDA is derived with a stored, verified bump | `*::canonical_bumps` | ⬜ P2 |
 | 5.6 | An epoch cap grants no accumulated allowance for idle epochs | `skipping_epochs_does_not_accumulate_allowance` | ✅ |
 | 5.7 | A treasury spend cap likewise does not accumulate | `idle_epochs_do_not_accumulate_budget` | ✅ |
@@ -180,7 +187,7 @@ deserialisation especially.
 
 ```bash
 anchor build 2>&1 | tee build.log && grep -i "stack offset" build.log  # must be empty
-cargo test --workspace          # 112 tests: unit + doc + runtime
+cargo test --workspace          # 119 tests: unit + doc + runtime
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 

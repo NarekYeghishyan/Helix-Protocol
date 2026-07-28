@@ -19,7 +19,7 @@ use crate::state::{Proposal, ProposalAction, ProposalState, Realm};
 /// Sets `Executed` **before** the caller performs any CPI. Marking afterwards
 /// would leave a window in which a re-entrant call could observe the proposal
 /// still `Queued` and execute it a second time (`INVARIANTS.md` §4.5).
-fn authorize_execution(proposal: &mut Proposal, now: i64) -> Result<()> {
+pub(crate) fn authorize_execution(proposal: &mut Proposal, now: i64) -> Result<()> {
     proposal.require_state(ProposalState::Queued)?;
 
     require!(now >= proposal.eta, GovernanceError::TimelockNotElapsed);

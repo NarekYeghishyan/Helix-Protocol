@@ -28,6 +28,7 @@ anchor-spl = { workspace = true, features = ["token_2022"] }
 # this binary.
 helix-staking = { workspace = true }
 helix-treasury = { workspace = true }
+helix-token-manager = { workspace = true }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("solana"))'] }

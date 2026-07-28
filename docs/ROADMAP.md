@@ -96,7 +96,7 @@ phase.
 | 3.2 | Idempotent bootstrap script driving the measured single transaction | 1d | ⬜ |
 | 3.3 | Verifiable builds (`solana-verify`), so deployed bytecode reproduces from source | 0.5d | ⬜ |
 | 3.4 | Upgrade authority to a 3-of-5 Squads multisig | 0.5d | ⬜ |
-| 3.5 | **Fix F-9** — `AcceptTokenManagerAdmin` action, so the last authority can migrate | 0.5d | ⬜ |
+| 3.5 | **Fix F-9** — the whole token-manager admin surface, so the last authority can migrate | 0.5d | ✅ Done |
 
 3.0 turned a recommendation into a fact and improved the design. Because
 `initialize_pool` and `initialize_treasury` take their privileged party as an argument,

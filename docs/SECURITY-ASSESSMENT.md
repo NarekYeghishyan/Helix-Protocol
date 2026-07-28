@@ -111,7 +111,7 @@ Severity = impact × likelihood, CVSS-style but judged rather than computed.
 | F-6 | Guardian key compromise causes governance denial of service | **Low** | Accepted |
 | F-7 | `Position` accounts are never closed | **Informational** | Open |
 | F-8 | Vesting, spend-cap and executor-migration instructions are unreachable | **Medium** | **Fixed** — found by attempting to test them |
-| F-9 | Token-manager admin cannot be handed to governance | **Low** | Open — same class as F-8 |
+| F-9 | Token-manager admin cannot be handed to governance | **Low** | **Fixed** — same class as F-8 |
 
 ### F-1 — Initialisers are front-runnable *(Medium, open)*
 
@@ -302,7 +302,7 @@ correct id is the treasury's `stream_count` at *execution* time and is not knowa
 the proposal is written. It is supplied as an execution argument and validated by the
 treasury against its own counter, so a caller cannot choose an arbitrary slot.
 
-### F-9 — Token-manager admin cannot be handed to governance *(Low, open)*
+### F-9 — Token-manager admin cannot be handed to governance *(Low, fixed)*
 
 The same shape as F-8, found the same way — by writing the deployment sequence down and
 noticing a step that cannot be performed.
@@ -323,13 +323,30 @@ minters and pause issuance, but it cannot mint — the mint authority is a PDA n
 Unlike the pool and treasury authorities, this one genuinely cannot be set at
 initialisation, so it needs the missing variant rather than a bootstrap change.
 
-**Fix:** add `AcceptTokenManagerAdmin` to `ProposalAction` with a matching `execute_*`,
-following the F-8 pattern. Half a day with tests.
+**Fixed**, and deliberately more broadly than the finding described. Adding only
+`AcceptTokenManagerAdmin` would have made the realm the admin *without any of the admin's
+powers* — it could not register a minter, retune a cap or pause issuance — which is the
+same defect again in a new place. The whole admin surface is now governable:
+`AcceptTokenManagerAdmin`, `RegisterMinter`, `UpdateMinter`, `RevokeMinter`,
+`SetTokenPaused` and `ProposeTokenAdmin`, in
+[`execute_token.rs`](../programs/governance/src/instructions/execute_token.rs).
 
-**Worth generalising.** F-8 and F-9 are the same defect twice: an instruction gated on a
-PDA signature that no code path can produce. A useful review question for any
-multi-program system — *for every privileged instruction, which concrete transaction
-produces its signer?* — and one that a per-program test suite will never ask.
+Verified by seven runtime tests in
+[`token_admin_e2e.rs`](../tests/integration/tests/token_admin_e2e.rs), which follow the
+real deployment order including the chicken-and-egg: the human admin registers the first
+minter and mints the initial supply, *then* hands over. They assert the handover lands,
+that the superseded admin loses every power, that governance can then pause, register and
+revoke, that a revoked minter can no longer mint, and that no other signer can act as
+admin.
+
+**Worth generalising.** F-8 and F-9 are the same defect twice — an instruction gated on a
+PDA signature that no code path can produce — and the F-9 fix nearly introduced it a third
+time. Two review questions for any multi-program system, neither of which a per-program
+test suite asks:
+
+1. For every privileged instruction, *which concrete transaction produces its signer?*
+2. When an authority is transferred, does the recipient also gain every power that
+   authority carries?
 
 ### F-7 — Position accounts never closed *(Informational, open)*
 

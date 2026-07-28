@@ -108,4 +108,36 @@ pub mod helix_governance {
     pub fn execute_set_governance_executor(ctx: Context<ExecuteTreasuryConfig>) -> Result<()> {
         instructions::execute::execute_set_governance_executor(ctx)
     }
+
+    // ---------------------------------------------------------- token-manager
+
+    /// Completes the admin handover, making this realm the mint's admin.
+    pub fn execute_accept_token_manager_admin(ctx: Context<ExecuteTokenAdmin>) -> Result<()> {
+        instructions::execute_token::execute_accept_token_manager_admin(ctx)
+    }
+
+    /// Halts or resumes HLX issuance. Never blocks burning.
+    pub fn execute_set_token_paused(ctx: Context<ExecuteTokenAdmin>) -> Result<()> {
+        instructions::execute_token::execute_set_token_paused(ctx)
+    }
+
+    /// Begins handing the admin role onward; the successor must still accept.
+    pub fn execute_propose_token_admin(ctx: Context<ExecuteTokenAdmin>) -> Result<()> {
+        instructions::execute_token::execute_propose_token_admin(ctx)
+    }
+
+    /// Registers a minter with a per-epoch issuance cap.
+    pub fn execute_register_minter(ctx: Context<ExecuteRegisterMinter>) -> Result<()> {
+        instructions::execute_token::execute_register_minter(ctx)
+    }
+
+    /// Adjusts a minter's cap, or enables/disables it.
+    pub fn execute_update_minter(ctx: Context<ExecuteModifyMinter>) -> Result<()> {
+        instructions::execute_token::execute_update_minter(ctx)
+    }
+
+    /// Permanently disables a minter, retaining its issuance history.
+    pub fn execute_revoke_minter(ctx: Context<ExecuteModifyMinter>) -> Result<()> {
+        instructions::execute_token::execute_revoke_minter(ctx)
+    }
 }

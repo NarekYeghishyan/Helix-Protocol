@@ -10,7 +10,7 @@ is bounded by the honesty of its coverage claims.
 ```bash
 anchor build                                                  # required first — the
                                                               # runtime tests load .so files
-cargo test --workspace                                        # 112 tests: unit + doc + runtime
+cargo test --workspace                                        # 119 tests: unit + doc + runtime
 cargo test -p helix-staking --lib                             # one program's unit tests
 cargo test -p helix-staking --lib -- --nocapture rounding     # one test, with output
 
@@ -30,7 +30,7 @@ status code. See [F-3](./SECURITY-ASSESSMENT.md#f-3--sbf-stack-frame-overflow).
 
 ## What is covered
 
-**65 unit tests** over pure functions and state machines, and **47 runtime tests** against
+**65 unit tests** over pure functions and state machines, and **54 runtime tests** against
 the real BPF programs.
 
 ### Unit tests
@@ -58,6 +58,7 @@ the real BPF programs.
 | `governance_e2e.rs` | 14 | §4.1–4.7, §4.11–4.12, §5.1 — the authority chain plus one negative test per threat-model attack |
 | `vesting_e2e.rs` | 12 | §1.5, §1.6, §7.5, §7.7–7.9 — grant → cliff → claim → revoke, forward-only revocation, committed balance protection, executor migration |
 | `bootstrap_atomicity.rs` | 3 | F-1's mitigation: the bootstrap fits one transaction (748 B / 17 accounts, asserted against the 1232-byte limit), and re-initialisation fails afterwards |
+| `token_admin_e2e.rs` | 7 | §5.2, §5.4, §5.9, §5.10 — the token-manager admin handover in real deployment order, and that governance then holds every admin power |
 
 ### Testing conventions worth copying
 
@@ -106,11 +107,19 @@ governance is *able to ask for*.
 [F-8](./SECURITY-ASSESSMENT.md#f-8--governance-gated-treasury-instructions-are-unreachable),
 now fixed and covered by `vesting_e2e.rs`.
 
+**The token-manager admin could not be handed to governance.** `accept_admin` needs the
+incoming admin to sign, and the executor PDA signs only inside an `execute_*`, of which
+none covered it. Same shape as the previous finding, in a different program.
+[F-9](./SECURITY-ASSESSMENT.md#f-9--token-manager-admin-cannot-be-handed-to-governance).
+
 **The reward solvency guard could never approve any rate.** Both halves were individually
 tested and individually correct; the defect was in their composition.
 [F-2](./SECURITY-ASSESSMENT.md#f-2--reward-liability-computed-from-deposits).
 
-The pattern is the same in both: the bug lived in the space *between* correct units.
+The pattern is the same in all three: the bug lived in the space *between* correct units.
+Fixing F-9 nearly produced a fourth instance — granting the realm the admin role without
+the admin's powers — which is why the fix covers the whole surface rather than the one
+instruction the finding named.
 
 ## Integration tests
 

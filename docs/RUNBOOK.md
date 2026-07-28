@@ -131,11 +131,21 @@ token-manager admin ──▶ realm executor PDA   (propose_admin → accept_adm
 ```
 
 `accept_admin` requires the new admin to **sign**, and the executor PDA signs only inside
-a governance execution. There is currently no `ProposalAction` variant for accepting a
-token-manager admin transfer, so completing this handover needs one added — the same class
-of gap as [F-8](./SECURITY-ASSESSMENT.md#f-8--governance-gated-treasury-instructions-are-unreachable),
-found by the same exercise of writing the sequence down. Until then the admin remains a
-multisig, which is a documented limitation rather than a surprise.
+a governance execution — so the accepting half is a proposal:
+
+```text
+1. register_minter        multisig, direct        the staking reward PDA
+2. propose_admin          multisig, direct        new_admin = realm executor PDA
+3. AcceptTokenManagerAdmin  proposal → execute    completes the handover
+```
+
+Budget a full voting period plus timelock for step 3, and do not treat it as a
+five-minute deployment step.
+
+After this the realm holds every admin power — pause, register, update and revoke minters,
+and propose the admin onward — so nothing is stranded. That completeness was the point of
+[F-9](./SECURITY-ASSESSMENT.md#f-9--token-manager-admin-cannot-be-handed-to-governance):
+handing over the role without the powers would have been a fresh instance of the same bug.
 
 ## 5. Verify
 
@@ -150,8 +160,8 @@ anchor idl fetch <PROGRAM_ID> --provider.cluster devnet   # IDL is published
 - [ ] `treasury.governance_executor` == realm executor PDA — likewise
 - [ ] `realm.authority` == its own executor PDA, so parameter changes require a vote
 - [ ] `realm.guardian` == the intended multisig, and nothing else
-- [ ] `token_config.admin` == the intended multisig (cannot yet be governance — see
-      [F-9](./SECURITY-ASSESSMENT.md#f-9--token-manager-admin-cannot-be-handed-to-governance))
+- [ ] `token_config.admin` == the realm executor PDA once step 4 completes, and
+      `pending_admin` is cleared
 - [ ] Exactly one registered minter, and it is the staking program's reward PDA
 - [ ] `pool.reward_rate` and `reward_period_end` match intent, and the reward vault
       holds at least `unpaid_liability + emission_for(rate, now)`

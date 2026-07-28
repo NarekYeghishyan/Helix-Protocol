@@ -55,6 +55,37 @@ pub enum ProposalAction {
     /// `set_governance_executor` is unreachable, and a superseded governance
     /// program can only be replaced by upgrading the treasury program itself.
     SetGovernanceExecutor { new_executor: Pubkey },
+
+    // ----------------------------------------------------------- token-manager
+    //
+    // The token-manager admin cannot be set at bootstrap: `register_minter` must
+    // run before the staking program can pay rewards, and only an admin can
+    // register a minter. So it starts as a multisig and is handed over
+    // afterwards, which needs the whole admin surface to be governable — not
+    // just the handover. Granting governance the role without the powers would
+    // reproduce F-8/F-9 a third time.
+    /// Accept a pending admin handover, making this realm the mint's admin.
+    AcceptTokenManagerAdmin,
+
+    /// Grant an address the right to mint, capped per epoch.
+    RegisterMinter {
+        authority: Pubkey,
+        epoch_cap: u64,
+        epoch_duration: i64,
+    },
+
+    /// Adjust a registered minter's cap, or enable/disable it.
+    UpdateMinter { epoch_cap: u64, enabled: bool },
+
+    /// Permanently disable a minter, retaining its issuance history.
+    RevokeMinter,
+
+    /// Halt or resume HLX issuance. Never blocks burning.
+    SetTokenPaused { paused: bool },
+
+    /// Begin handing the admin role to someone else. The successor must still
+    /// accept, so this alone transfers nothing.
+    ProposeTokenAdmin { new_admin: Pubkey },
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize, InitSpace, Clone, Copy, PartialEq, Eq, Debug)]
