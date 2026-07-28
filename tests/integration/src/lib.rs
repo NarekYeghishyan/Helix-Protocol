@@ -110,6 +110,15 @@ impl TestEnv {
         let mut signers: Vec<&Keypair> = vec![&self.payer];
         signers.extend_from_slice(extra_signers);
 
+        // Force a fresh blockhash for every transaction.
+        //
+        // Two identical instruction sets signed under the same blockhash produce
+        // the same transaction signature, and the runtime rejects the second as
+        // `AlreadyProcessed` — which surfaces as a confusing failure in tests that
+        // legitimately repeat a call (claim twice, unstake in a loop). A real
+        // cluster gets new blockhashes as slots advance; LiteSVM has to be told.
+        self.svm.expire_blockhash();
+
         let tx = Transaction::new_signed_with_payer(
             instructions,
             Some(&self.payer.pubkey()),

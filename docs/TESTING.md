@@ -2,15 +2,16 @@
 
 *Deliverable 5 — testing procedures.*
 
-This document is deliberately explicit about what is **not** covered. A test suite's
-value is bounded by the honesty of its coverage claims, and the gap here is real:
-current coverage is unit-level, and cross-program behaviour is unverified at runtime.
+This document is deliberately explicit about what is **not** covered. A test suite's value
+is bounded by the honesty of its coverage claims.
 
 ## Running the suite
 
 ```bash
-cargo test --workspace --lib                                  # 65 unit tests
-cargo test -p helix-staking --lib                             # one program
+anchor build                                                  # required first — the
+                                                              # runtime tests load .so files
+cargo test --workspace                                        # 97 tests: unit + doc + runtime
+cargo test -p helix-staking --lib                             # one program's unit tests
 cargo test -p helix-staking --lib -- --nocapture rounding     # one test, with output
 
 cargo clippy --workspace --all-targets -- -D warnings
@@ -29,8 +30,10 @@ status code. See [F-3](./SECURITY-ASSESSMENT.md#f-3--sbf-stack-frame-overflow).
 
 ## What is covered
 
-65 unit tests over pure functions and state machines (61 hand-written, plus the four
-`test_id` checks Anchor generates from `declare_id!`).
+**65 unit tests** over pure functions and state machines, and **32 runtime tests** against
+the real BPF programs.
+
+### Unit tests
 
 | Area | Tests | What is asserted |
 |---|---|---|
@@ -44,6 +47,15 @@ status code. See [F-3](./SECURITY-ASSESSMENT.md#f-3--sbf-stack-frame-overflow).
 | Proposal lifecycle | 6 | Guardian veto window, terminal states, state gating, queued-proposal expiry |
 | Vesting | 9 | Cliff behaviour, linearity, truncation direction, and the three revocation properties |
 | Spend budget | 5 | Cap enforcement, rejection without mutation, rollover, no allowance accumulation |
+
+### Runtime tests
+
+| File | Tests | What is asserted |
+|---|---|---|
+| `smoke.rs` | 2 | All four programs load and are executable; IDs are distinct |
+| `staking_transfer_fee.rs` | 4 | §1.1, §1.3, §2.1–§2.3 against a real 1% transfer-fee mint |
+| `staking_lifecycle.rs` | 12 | §1.2, §1.4, §6.1, §6.2, §6.4, §6.5 — funding, rate solvency, accrual, claim, partial and full unstake, pause semantics, cross-owner claim refused |
+| `governance_e2e.rs` | 14 | §4.1–4.7, §4.11–4.12, §5.1 — the authority chain plus one negative test per threat-model attack |
 
 ### Testing conventions worth copying
 
@@ -74,16 +86,23 @@ Read this section before trusting anything above.
 
 | Gap | Consequence | Fix |
 |---|---|---|
-| No governance runtime tests | Proposal lifecycle, quorum and timelock unexercised end to end | [ROADMAP](./ROADMAP.md) Phase 2.4 |
-| No test of the executor PDA signing a treasury spend | The core authority claim is still an assumption | Phase 2.4 |
-| No negative/attack tests | The threat model's defences have no *failing* test | Phase 2.5 |
-| No vesting runtime tests | Claim and revoke arithmetic is unit-tested; the token movement is not | Phase 2.4 |
+| **No vesting runtime tests** | Blocked: vesting is currently *unreachable on chain* — see below | [ROADMAP](./ROADMAP.md) 2.6 then 2.7 |
 | No compute benchmarks | Invariant §6.3 is argued from code structure, not measured | Phase 6 |
 | No fuzzing | Only hand-chosen inputs have been tried | Phase 6 |
-| `Σ position.weighted_amount` across many positions | §1.4 checked for one position, not an aggregate | Phase 2.4 |
+| No deployment-time test for §5.8 | Initialiser front-running (F-1) is mitigated operationally, not tested | Phase 3 |
+| Multi-staker reward distribution at scale | Two positions are exercised, not hundreds | Phase 6 (fuzzing) |
 
-Staking's deposit path and the Token-2022 fee invariants (§1.1, §1.3, §2.1–§2.3) are now
-covered — see below.
+### The vesting gap is not just missing tests
+
+Writing the vesting runtime test found that **there is no way to construct a transaction
+that creates a stream**. `create_stream`, `revoke_stream`, `set_spend_cap` and
+`set_governance_executor` all require the governance executor's signature, and
+`ProposalAction` has no variant that produces it for them — only `spend` is reachable.
+
+Every unit test passed. The code compiled. The CPI wiring was correct. The gap was in what
+governance is *able to ask for*, which is not a property any unit test observes. Recorded
+as [F-8](./SECURITY-ASSESSMENT.md#f-8--governance-gated-treasury-instructions-are-unreachable);
+the fix precedes the tests.
 
 ## Integration tests
 
@@ -126,8 +145,10 @@ test catch it.**
 
 1. **lint** — `fmt --check`, `clippy -D warnings`, eslint/prettier. Fast, fails first.
 2. **audit** — `cargo audit` against RustSec.
-3. **test** — `anchor keys verify`, build with the stack-offset grep, unit tests,
-   `anchor test`. Artifacts (`.so`, IDL) retained 14 days.
+3. **test** — `anchor keys verify`, `anchor build` with the stack-offset grep, then
+   `cargo test --workspace` (unit + doc + runtime). Artifacts (`.so`, IDL) retained 14
+   days. `anchor test` is deliberately not run: there is no TypeScript suite, and stubbing
+   it green would report a passing integration suite containing nothing.
 
 `RUSTFLAGS: -D warnings` is set workspace-wide, so a warning fails the build. Warnings
 that are permitted to accumulate stop being read.

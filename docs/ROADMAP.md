@@ -57,8 +57,9 @@ The top priority. Everything after this depends on it.
 | 2.3 | **Fee-bearing mint path** — staking re-run against a Token-2022 transfer-fee mint | 1d | ✅ Done |
 | 2.4 | Governance end-to-end: create → activate → vote → finalize → queue → execute, incl. a treasury spend actually landing | 1–2d | ✅ Done |
 | 2.5 | Negative tests: the attacks in [THREAT-MODEL.md](./THREAT-MODEL.md) must each fail | 1d | ✅ Done |
-| 2.2b | Staking lifecycle: accrue → claim → unlock → unstake, with clock warping | 1d | ⬜ |
-| 2.6 | Vesting runtime: create → cliff → claim → revoke, with token movement | 1d | ⬜ |
+| 2.2b | Staking lifecycle: accrue → claim → unlock → unstake, with clock warping | 1d | ✅ Done |
+| 2.6 | **Fix F-8** — add the missing `ProposalAction` variants so vesting, spend-cap and executor migration are reachable at all | 0.5d | ⬜ **next** |
+| 2.7 | Vesting runtime: create → cliff → claim → revoke, with token movement | 1d | ⬜ blocked on 2.6 |
 
 **2.3 was the one that mattered most, and it is done.** The programs credit the observed
 vault delta rather than the `amount` argument — correct, but on a plain SPL mint the two
@@ -66,9 +67,16 @@ are identical, so every unit test passed either way. It is now verified against 
 fee-bearing mint and mutation-tested: injecting the bug fails three tests with a
 30,000-unit vault shortfall, while the plain-mint test stays green.
 
-**2.4 is now the largest remaining gap.** "The executor PDA can sign a treasury spend" is
-the single most important claim in the architecture, and it is still proven only to
-type-check.
+**2.4 is done**, and it verified the central claim of the architecture: a passed,
+timelocked proposal moves treasury funds, and nothing else can.
+
+**2.6 exists because writing these tests found a real hole.** There was no way to
+construct a transaction that creates a vesting stream — governance has no
+`ProposalAction` variant that produces the executor signature for it. Vesting, the spend
+cap and executor migration are all currently unreachable on chain
+([F-8](./SECURITY-ASSESSMENT.md#f-8--governance-gated-treasury-instructions-are-unreachable)).
+Every unit test passed and the code compiled; the gap was in what governance is *able to
+ask for*.
 
 **2.5 defines "done" for security work.** A threat model whose defences have no failing
 test is a document, not a control.

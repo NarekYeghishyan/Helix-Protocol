@@ -57,10 +57,17 @@ receives exactly `total_amount` in the end, never less.
 | `set_spend_cap` | governance executor | |
 | `set_governance_executor` | current executor | No admin escape hatch |
 
-`set_governance_executor` is callable only by the current executor, so migrating to a
-new governance program is itself something governance must vote for. There is
-deliberately no admin override — one would make every other guarantee here conditional
-on whoever holds it.
+`set_governance_executor` is callable only by the current executor, and there is
+deliberately no admin override — one would make every other guarantee here conditional on
+whoever holds it.
+
+> **Known gap (F-8).** `create_stream`, `revoke_stream`, `set_spend_cap` and
+> `set_governance_executor` all require the executor's signature, but `helix-governance`
+> currently has no `ProposalAction` variant that produces it for them — only `spend` is
+> reachable. So vesting is presently unreachable on chain, the spend cap is immutable
+> after initialisation, and governance migration is not yet possible. Found by attempting
+> to write the vesting runtime test; see
+> [SECURITY-ASSESSMENT.md F-8](../../docs/SECURITY-ASSESSMENT.md#f-8--governance-gated-treasury-instructions-are-unreachable).
 
 ## Tests
 

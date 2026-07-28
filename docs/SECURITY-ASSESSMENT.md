@@ -110,6 +110,7 @@ Severity = impact × likelihood, CVSS-style but judged rather than computed.
 | F-5 | Upgrade authority not migrated to governance | **Critical** (if deployed) | Open — Phase 7 |
 | F-6 | Guardian key compromise causes governance denial of service | **Low** | Accepted |
 | F-7 | `Position` accounts are never closed | **Informational** | Open |
+| F-8 | Vesting, spend-cap and executor-migration instructions are unreachable | **Medium** | Open — found by attempting to test them |
 
 ### F-1 — Initialisers are front-runnable *(Medium, open)*
 
@@ -221,6 +222,48 @@ A compromised guardian can veto every proposal indefinitely, freezing governance
 cannot cause anything to happen — only prevent it. Accepted as the deliberate cost of
 having a veto at all; mitigated by holding the guardian key in a multisig and by the
 realm's ability to vote in a new one, provided a proposal can pass first.
+
+### F-8 — Governance-gated treasury instructions are unreachable *(Medium, open)*
+
+Four treasury instructions require a signature from `governance_executor`:
+
+| Instruction | Reachable? |
+|---|---|
+| `spend` | ✅ via `execute_treasury_transfer` |
+| `create_stream` | ❌ |
+| `revoke_stream` | ❌ |
+| `set_spend_cap` | ❌ |
+| `set_governance_executor` | ❌ |
+
+The executor PDA can only be produced inside a governance `execute_*` instruction, and
+only three exist — `execute_signal`, `execute_treasury_transfer`,
+`execute_set_staking_reward_rate`. `ProposalAction` has no variant reaching the other
+four, so **no signature satisfying their constraint can ever be produced**.
+
+Consequences:
+
+- **The vesting subsystem is dead code on chain.** Streams can never be created, so
+  `claim_stream` and `revoke_stream` are unreachable too. Nine unit tests cover arithmetic
+  that no transaction can invoke.
+- **The per-epoch spend cap is immutable after initialisation.** Set it wrong and it stays
+  wrong.
+- **Governance migration is impossible.** `programs/treasury/README.md` stated that
+  migrating to a new governance program "is itself something the existing governance has
+  to vote for". That was false — there is nothing to vote for. The README has been
+  corrected pending the fix.
+
+No funds are at risk: the failure mode is that features do not work, not that they work
+wrongly. Rated Medium rather than Low because the missing migration path means a
+superseded governance program cannot be replaced except by a program upgrade.
+
+**How it was found matters.** It surfaced while writing the vesting runtime test — there
+was no way to construct a transaction that creates a stream. Every unit test passed, the
+code compiled, and the CPI wiring was correct. The gap was in what governance is *able to
+ask for*, which is not a property any unit test observes.
+
+**Fix:** add `CreateVestingStream`, `RevokeVestingStream`, `SetTreasurySpendCap` and
+`SetGovernanceExecutor` variants to `ProposalAction`, with one `execute_*` instruction
+each, following `execute_treasury_transfer`. Roughly half a day including runtime tests.
 
 ### F-7 — Position accounts never closed *(Informational, open)*
 

@@ -15,11 +15,13 @@ An invariant with no test is a design intention, not a guarantee.
 
 Notation: `Σ` sums over all accounts of that type belonging to the pool/realm.
 
-**Current totals across 49 invariants: 34 ✅ · 7 ◐ · 8 ⬜.**
+**Current totals across 50 invariants: 40 ✅ · 5 ◐ · 5 ⬜.**
 
-The authority chain is now verified end to end at runtime: a passed, timelocked proposal
-moves treasury funds, and a direct call to the treasury is refused. The Token-2022 fee
-invariants (§2) are verified against a real fee-bearing mint.
+The authority chain is verified end to end at runtime: a passed, timelocked proposal moves
+treasury funds, and a direct call to the treasury is refused. The Token-2022 fee
+invariants (§2) are verified against a real fee-bearing mint, and the staking withdrawal
+paths (§6) — the ones users depend on to exit — are exercised through claim, partial
+unstake and full unstake.
 
 Two things worth knowing about how much to trust these:
 
@@ -34,8 +36,9 @@ was passing for the wrong reason — the guardian had no lamports, so its vote f
 rent rather than on authorisation. Tightening the assertion exposed it. A negative test
 that does not name its expected failure is not a test.
 
-What remains ⬜ is concentrated in staking's withdrawal lifecycle, vesting token movement,
-and compute benchmarking.
+What remains ⬜ is vesting token movement — currently **unreachable on chain**, see
+[F-8](./SECURITY-ASSESSMENT.md#f-8--governance-gated-treasury-instructions-are-unreachable)
+— along with compute benchmarking and the deployment-time invariant §5.8.
 
 ---
 
@@ -44,9 +47,9 @@ and compute benchmarking.
 | # | Invariant | Test | Status |
 |---|-----------|------|--------|
 | 1.1 | `Σ position.amount == stake_vault.amount` | `fee_bearing_mint_preserves_vault_solvency` | ✅ |
-| 1.2 | `Σ (position.pending + earned(position)) <= reward_vault.amount` | `liability_is_never_understated` | ◐ |
+| 1.2 | `Σ (position.pending + earned(position)) <= reward_vault.amount` | `the_vault_stays_solvent_across_a_full_cycle`, `an_unfundable_rate_is_refused` | ✅ |
 | 1.3 | `pool.total_staked == Σ position.amount` | `fee_bearing_mint_preserves_vault_solvency` | ✅ |
-| 1.4 | `pool.total_weighted == Σ position.weighted_amount` | `weighted_amount_is_derived_from_the_credited_amount` | ◐ |
+| 1.4 | `pool.total_weighted == Σ position.weighted_amount` | `the_vault_stays_solvent_across_a_full_cycle`, `partial_unstake_recomputes_weight_from_the_remainder` | ✅ |
 | 1.5 | `Σ stream.claimed <= Σ stream.total_amount` | `outstanding_tracks_the_unclaimed_remainder` | ◐ |
 | 1.6 | `Σ (stream.total_amount - stream.claimed) <= treasury_vault.amount` | `uncommitted_excludes_stream_obligations` | ◐ |
 
@@ -138,10 +141,11 @@ instruction. A runtime test attempting every other instruction as guardian would
 
 | # | Invariant | Test | Status |
 |---|-----------|------|--------|
-| 6.1 | `claim` succeeds regardless of lock state | `staking::claim_ignores_lock` | ⬜ P2 |
-| 6.2 | `unstake` after `lock_end` always succeeds if the vault is solvent | `staking::unstake_after_lock_always_works` | ⬜ P2 |
+| 6.1 | `claim` succeeds regardless of lock state | `claiming_is_available_while_the_position_is_locked` | ✅ |
+| 6.2 | `unstake` after `lock_end` always succeeds if the vault is solvent | `unstaking_after_the_lock_returns_principal` | ✅ |
 | 6.3 | No instruction's compute cost grows with staker or voter count | `bench::compute_is_constant` | ⬜ P6 |
-| 6.4 | Pausing cannot trap principal — `unstake` and `claim` stay live | `staking::pause_does_not_trap_funds` | ⬜ P2 |
+| 6.4 | Pausing cannot trap principal — `unstake` and `claim` stay live | `pausing_blocks_deposits_but_never_traps_funds` | ✅ |
+| 6.5 | A position's rewards are claimable only by its owner | `a_staker_cannot_claim_another_stakers_position` | ✅ |
 
 6.4 is a deliberate limit on the pause switch. A pause that stops withdrawals is
 indistinguishable from a rug from the user's side; the pause here blocks *new* deposits
@@ -169,7 +173,7 @@ deserialisation especially.
 
 ```bash
 anchor build 2>&1 | tee build.log && grep -i "stack offset" build.log  # must be empty
-cargo test --workspace          # 71 tests: unit + doc + integration
+cargo test --workspace          # 97 tests: unit + doc + integration
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 

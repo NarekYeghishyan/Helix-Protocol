@@ -404,4 +404,148 @@ impl System {
     pub fn new_token_account(&mut self, owner: &Pubkey) -> Pubkey {
         self.env.create_token_account(&self.mint, owner).pubkey()
     }
+
+    // ------------------------------------------------------- staking rewards
+
+    /// Mints and deposits into the reward vault. Permissionless by design.
+    pub fn fund_rewards(&mut self, amount: u64) {
+        let payer = self.env.payer_pubkey();
+        let funder_tokens = self.env.create_token_account(&self.mint, &payer).pubkey();
+        let authority = self.mint_authority.insecure_clone();
+        self.env
+            .mint_tokens_raw(&self.mint, &funder_tokens, &authority, amount);
+
+        self.env.send(
+            &[TestEnv::ix(
+                helix_staking::ID,
+                helix_staking::accounts::FundRewards {
+                    pool: self.pool,
+                    funder: payer,
+                    reward_mint: self.mint,
+                    funder_token_account: funder_tokens,
+                    reward_vault: self.reward_vault,
+                    token_program: token_2022::ID,
+                },
+                helix_staking::instruction::FundRewards { amount },
+            )],
+            &[],
+        );
+    }
+
+    pub fn set_reward_rate_ix(
+        &self,
+        new_rate: u64,
+        reward_period_end: i64,
+    ) -> solana_instruction::Instruction {
+        TestEnv::ix(
+            helix_staking::ID,
+            helix_staking::accounts::SetRewardRate {
+                pool: self.pool,
+                authority: self.env.payer_pubkey(),
+                reward_vault: self.reward_vault,
+            },
+            helix_staking::instruction::SetRewardRate {
+                new_rate,
+                reward_period_end,
+            },
+        )
+    }
+
+    pub fn set_reward_rate(&mut self, new_rate: u64, reward_period_end: i64) {
+        let ix = self.set_reward_rate_ix(new_rate, reward_period_end);
+        self.env.send(&[ix], &[]);
+    }
+
+    pub fn set_paused(&mut self, paused: bool) {
+        self.env.send(
+            &[TestEnv::ix(
+                helix_staking::ID,
+                helix_staking::accounts::PoolAuthorityOnly {
+                    pool: self.pool,
+                    authority: self.env.payer_pubkey(),
+                },
+                helix_staking::instruction::SetPaused { paused },
+            )],
+            &[],
+        );
+    }
+
+    pub fn claim_ix(&self, position: Pubkey) -> solana_instruction::Instruction {
+        let (vault_authority, _) = pda::vault_authority(&self.pool);
+        TestEnv::ix(
+            helix_staking::ID,
+            helix_staking::accounts::Claim {
+                pool: self.pool,
+                owner: self.voter.pubkey(),
+                position,
+                reward_mint: self.mint,
+                reward_vault: self.reward_vault,
+                owner_reward_account: self.voter_tokens,
+                vault_authority,
+                token_program: token_2022::ID,
+            },
+            helix_staking::instruction::Claim {},
+        )
+    }
+
+    pub fn unstake_ix(&self, position: Pubkey, amount: u64) -> solana_instruction::Instruction {
+        let (vault_authority, _) = pda::vault_authority(&self.pool);
+        TestEnv::ix(
+            helix_staking::ID,
+            helix_staking::accounts::Unstake {
+                pool: self.pool,
+                owner: self.voter.pubkey(),
+                position,
+                stake_mint: self.mint,
+                stake_vault: self.stake_vault,
+                owner_token_account: self.voter_tokens,
+                vault_authority,
+                token_program: token_2022::ID,
+            },
+            helix_staking::instruction::Unstake { amount },
+        )
+    }
+
+    /// Builds a `stake` instruction without sending it, for negative tests.
+    pub fn stake_ix(
+        &self,
+        position_id: u64,
+        amount: u64,
+        tier: LockTier,
+    ) -> solana_instruction::Instruction {
+        let (position, _) = pda::position(&self.pool, &self.voter.pubkey(), position_id);
+        TestEnv::ix(
+            helix_staking::ID,
+            helix_staking::accounts::Stake {
+                pool: self.pool,
+                owner: self.voter.pubkey(),
+                position,
+                stake_mint: self.mint,
+                owner_token_account: self.voter_tokens,
+                stake_vault: self.stake_vault,
+                token_program: token_2022::ID,
+                system_program: anchor_lang::system_program::ID,
+            },
+            helix_staking::instruction::Stake {
+                position_id,
+                amount,
+                tier,
+            },
+        )
+    }
+
+    /// Sends an instruction signed by the voter.
+    pub fn send_as_voter(&mut self, ix: solana_instruction::Instruction) {
+        let voter = self.voter.insecure_clone();
+        self.env.send(&[ix], &[&voter]);
+    }
+
+    /// Sends an instruction signed by the voter, returning the failure.
+    pub fn try_as_voter(
+        &mut self,
+        ix: solana_instruction::Instruction,
+    ) -> std::result::Result<(), String> {
+        let voter = self.voter.insecure_clone();
+        self.env.try_send(&[ix], &[&voter])
+    }
 }
