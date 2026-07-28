@@ -106,7 +106,7 @@ Severity = impact × likelihood, CVSS-style but judged rather than computed.
 | F-1 | Initialisers are front-runnable | **Medium** | Open — mitigated operationally |
 | F-2 | `unpaid_liability` used deposits as liability, making any non-zero reward rate unsettable | **High** | **Fixed** |
 | F-3 | SBF stack frame overflow in three `Accounts` structs | **High** | **Fixed** |
-| F-4 | Cross-program flows unverified at runtime | **High** | Partially resolved — staking + Token-2022 verified; governance/treasury open |
+| F-4 | Cross-program flows unverified at runtime | **High** | Largely resolved — authority chain verified end to end; staking withdrawal and vesting remain |
 | F-5 | Upgrade authority not migrated to governance | **Critical** (if deployed) | Open — Phase 7 |
 | F-6 | Guardian key compromise causes governance denial of service | **Low** | Accepted |
 | F-7 | `Position` accounts are never closed | **Informational** | Open |
@@ -191,10 +191,21 @@ deleted silently. Mutation testing confirmed the new tests have teeth: injecting
 fails three of them with a 30,000-unit shortfall between positions and vault, while the
 plain-mint test stays green.
 
-**Still open:** governance and treasury runtime flows. Specifically, *"the executor PDA
-can sign a treasury spend, and nothing else can"* — the central claim of
-[§1 Authority reachability](#authority-reachability) — is still established by reading the
-constraints, not by executing them. That is now the highest-priority gap (Phase 2.4).
+**Also resolved:** the authority chain in
+[§1 Authority reachability](#authority-reachability) is now executed rather than read. A
+passed, timelocked proposal moves treasury funds; a direct call to the treasury is
+refused; execution before `eta` is refused; a proposal cannot execute twice; a guardian
+can cancel and do nothing else; and a substituted destination is rejected because
+execution reads its parameters from `proposal.action` rather than the caller.
+
+The flash-loan defence (A1) is likewise now verified at runtime: an unlocked position five
+times the size of the committed stake is refused with `InsufficientLockDuration` and
+contributes zero weight.
+
+**Still open:** staking's withdrawal lifecycle (accrue → claim → unlock → unstake) and
+vesting token movement. Both are arithmetic that is unit-tested; what is unverified is the
+token transfer and account-state bookkeeping around it. Lower risk than what was closed,
+but not zero — `claim` and `unstake` are the paths users depend on to exit.
 
 ### F-5 — Upgrade authority not migrated *(Critical if deployed, open)*
 

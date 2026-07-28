@@ -12,7 +12,9 @@ cargo test --workspace
 |---|---|
 | [`integration/tests/smoke.rs`](./integration/tests/smoke.rs) | All four programs load and are executable; program IDs are distinct |
 | [`integration/tests/staking_transfer_fee.rs`](./integration/tests/staking_transfer_fee.rs) | Invariants §1.1, §1.3, §2.1–§2.3 — Token-2022 transfer fees |
-| [`integration/src/lib.rs`](./integration/src/lib.rs) | Shared harness: mint creation with extensions, clock warping, PDA derivations |
+| [`integration/tests/governance_e2e.rs`](./integration/tests/governance_e2e.rs) | §4.1–4.7, §4.11–4.12, §5.1 — the authority chain, plus a negative test per threat-model attack |
+| [`integration/src/lib.rs`](./integration/src/lib.rs) | Harness: mint creation with extensions, clock warping, PDA derivations |
+| [`integration/src/bootstrap.rs`](./integration/src/bootstrap.rs) | A fully wired system — pool, realm, treasury, authorities connected |
 
 ## Why the transfer-fee tests matter most
 
@@ -50,9 +52,25 @@ against the same token version.
 sized for its extensions up front — Token-2022 will not grow it later. `TestEnv::create_mint`
 handles both.
 
+## Negative tests must name their expected failure
+
+Every negative test asserts a **specific** error, not merely that something failed:
+
+```rust
+let err = sys.env.try_send(&[ix], &[]).expect_err("must fail");
+assert!(err.contains("TimelockNotElapsed"), "unexpected failure: {err}");
+```
+
+An earlier draft also accepted any error containing `0x`, which is nearly every program
+error. That permissiveness hid a test passing for the wrong reason: the guardian had no
+lamports, so its vote failed on rent for the vote record rather than on authorisation.
+Tightening the assertion exposed it immediately.
+
+`try_send` returns the failure **with program logs attached**, because an Anchor code on
+its own (`custom program error: 0x1771`) says nothing while the log line names the
+constraint.
+
 ## Still missing
 
-Governance and treasury runtime flows — proposal lifecycle, the executor PDA signing a
-treasury spend, vesting claims, and negative tests for every attack in
-[THREAT-MODEL.md](../docs/THREAT-MODEL.md). Tracked as Phase 2.4–2.5 in
-[ROADMAP.md](../docs/ROADMAP.md).
+Staking's withdrawal lifecycle (accrue → claim → unlock → unstake) and vesting token
+movement. Tracked as Phase 2.2b and 2.6 in [ROADMAP.md](../docs/ROADMAP.md).

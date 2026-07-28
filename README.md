@@ -8,11 +8,11 @@ Rust with the Anchor framework.
 [![Solana](https://img.shields.io/badge/solana-3.x-purple)](https://solana.com)
 [![License](https://img.shields.io/badge/license-Apache--2.0-green)](./LICENSE)
 
-> **Status: unaudited. Not deployed.** All four programs build to BPF and pass 71 tests
-> locally, including runtime tests against a real Token-2022 mint with transfer fees.
-> Governance/treasury runtime coverage, the analytics stack and a devnet deployment are
-> scoped in [ROADMAP.md](./docs/ROADMAP.md). Nothing here has held real value.
-> See [SECURITY.md](./SECURITY.md).
+> **Status: unaudited. Not deployed.** All four programs build to BPF and pass 85 tests
+> locally, including runtime tests that execute the full governance → treasury authority
+> chain and a real Token-2022 mint with transfer fees. The analytics stack and a devnet
+> deployment are scoped in [ROADMAP.md](./docs/ROADMAP.md). Nothing here has held real
+> value. See [SECURITY.md](./SECURITY.md).
 
 Four programs that compose into one system. Nothing here wraps an existing protocol —
 the reward accounting, the vote-weight mechanism and the governance state machine are
@@ -124,19 +124,26 @@ docs/              the five deliverables above
 ```bash
 anchor build 2>&1 | tee build.log
 grep -i "stack offset" build.log   # must be empty — anchor build exits 0 even when it isn't
-cargo test --workspace             # 71 tests: unit + doc + integration
+cargo test --workspace             # 85 tests: unit + doc + integration
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all -- --check
 ```
 
 **65 unit tests** cover the reward accumulator, vesting schedule, tally arithmetic and
 every state machine directly — including a differential check that fixed-point rounding
-never favours the user over the pool. **6 runtime tests** ([`tests/integration/`](./tests/integration))
-exercise the real BPF programs against the real Token-2022 program via LiteSVM.
+never favours the user over the pool.
 
-Governance and treasury runtime flows are **not yet covered** — the executor PDA signing a
-treasury spend is still proven only to type-check. See [TESTING.md](./docs/TESTING.md) for
-the full list of what is and is not covered; it is kept honest deliberately.
+**20 runtime tests** ([`tests/integration/`](./tests/integration)) execute the real BPF
+programs against the real Token-2022 program via LiteSVM, including the full authority
+chain — a passed, timelocked proposal moving treasury funds — and negative tests for each
+attack in the [threat model](./docs/THREAT-MODEL.md): direct treasury calls, pre-timelock
+execution, double execution, double voting, flash-staked voting, and substituted
+destinations.
+
+Of 49 documented invariants, **34 are verified, 7 partial, 8 untested** — tracked row by
+row in [INVARIANTS.md](./docs/INVARIANTS.md). Staking's withdrawal lifecycle and vesting
+token movement are the main remaining gaps. That table is kept honest deliberately: a
+claim no test can falsify is documentation, not a guarantee.
 
 ## License
 

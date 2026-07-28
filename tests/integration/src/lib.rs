@@ -20,6 +20,9 @@ use solana_transaction::Transaction;
 use spl_token_2022::extension::ExtensionType;
 use spl_token_2022::state::{Account as T22Account, Mint as T22Mint};
 
+pub mod bootstrap;
+pub use bootstrap::System;
+
 /// Fee configuration for a Token-2022 mint.
 ///
 /// The whole reason this harness exists: staking must be exercised against a mint

@@ -15,16 +15,27 @@ An invariant with no test is a design intention, not a guarantee.
 
 Notation: `Σ` sums over all accounts of that type belonging to the pool/realm.
 
-**Current totals across 46 invariants: 26 ✅ · 7 ◐ · 13 ⬜.**
+**Current totals across 49 invariants: 34 ✅ · 7 ◐ · 8 ⬜.**
 
-The remaining gap is concentrated in governance and treasury runtime flows. The
-Token-2022 fee invariants (§2) are now verified against a real fee-bearing mint, which
-closes what was the most dangerous gap.
+The authority chain is now verified end to end at runtime: a passed, timelocked proposal
+moves treasury funds, and a direct call to the treasury is refused. The Token-2022 fee
+invariants (§2) are verified against a real fee-bearing mint.
 
-Those tests were **mutation-tested**: reverting the fix so that deposits credit the
-`amount` argument instead of the vault delta makes three of them fail, reporting a
-30,000-unit shortfall between positions and vault. The plain-mint test still passes under
-that mutation, which is precisely why unit tests alone could never have caught it.
+Two things worth knowing about how much to trust these:
+
+**The fee tests were mutation-tested.** Reverting the fix so deposits credit the `amount`
+argument instead of the vault delta makes three of them fail with a 30,000-unit shortfall
+between positions and vault. The plain-mint test still passes under that mutation, which
+is exactly why unit tests alone could never have caught it.
+
+**The negative tests assert specific error names, not merely that something failed.** An
+earlier draft accepted any error containing `0x`, and that permissiveness hid a test which
+was passing for the wrong reason — the guardian had no lamports, so its vote failed on
+rent rather than on authorisation. Tightening the assertion exposed it. A negative test
+that does not name its expected failure is not a test.
+
+What remains ⬜ is concentrated in staking's withdrawal lifecycle, vesting token movement,
+and compute benchmarking.
 
 ---
 
@@ -93,13 +104,15 @@ on-chain fixed-point result, asserting the on-chain value is never larger.
 
 | # | Invariant | Test | Status |
 |---|-----------|------|--------|
-| 4.1 | One `VoteRecord` per `(proposal, position)` — double voting impossible | `governance::no_double_vote` | ⬜ P2.4 |
-| 4.2 | Vote weight counted only if `position.lock_end >= proposal.voting_ends_at` | `lock_gate_rejects_freshly_opened_positions`, `a_lock_expiring_mid_vote_cannot_vote` | ✅ |
-| 4.3 | `for + against + abstain <= total_weight_snapshot` | `governance::votes_bounded_by_supply` | ⬜ P2.4 |
-| 4.4 | No proposal executes before `eta` | `governance::timelock_enforced` | ⬜ P2.4 |
-| 4.5 | No proposal executes twice | `governance::no_double_execute` | ⬜ P2.4 |
-| 4.6 | State transitions follow the documented lifecycle; no state is skipped | `require_state_gates_transitions`, `terminal_states_are_terminal` | ✅ |
-| 4.7 | The guardian can only cancel — never pass, queue, or execute | `guardian_can_veto_until_executed` | ◐ |
+| 4.1 | One `VoteRecord` per `(proposal, position)` — double voting impossible | `a_position_cannot_vote_twice` | ✅ |
+| 4.2 | Vote weight counted only if `position.lock_end >= proposal.voting_ends_at` | `a_flash_staked_position_cannot_vote` (runtime), `lock_gate_rejects_freshly_opened_positions` | ✅ |
+| 4.3 | `for + against + abstain <= total_weight_snapshot` | `the_full_lifecycle_visits_every_state` | ◐ |
+| 4.4 | No proposal executes before `eta` | `execution_before_the_timelock_elapses_is_refused` | ✅ |
+| 4.5 | No proposal executes twice | `a_proposal_cannot_execute_twice` | ✅ |
+| 4.6 | State transitions follow the documented lifecycle; no state is skipped | `the_full_lifecycle_visits_every_state` (runtime), `require_state_gates_transitions` | ✅ |
+| 4.7 | The guardian can only cancel — never pass, queue, or execute | `the_guardian_cannot_do_anything_but_cancel`, `the_guardian_veto_prevents_execution` | ✅ |
+| 4.11 | Execution parameters come from `proposal.action`, not the caller | `executing_a_different_destination_than_the_proposal_named_is_refused` | ✅ |
+| 4.12 | An action variant cannot be executed through the wrong handler | `a_signal_proposal_cannot_be_executed_as_a_treasury_transfer` | ✅ |
 | 4.8 | Quorum and approval lose nothing to rounding | `quorum_is_not_lost_to_rounding`, `supermajority_threshold` | ✅ |
 | 4.9 | Abstentions count toward quorum but never toward approval | `abstentions_do_not_help_approval` | ✅ |
 | 4.10 | A queued proposal expires and cannot execute afterwards | `queued_proposals_expire` | ◐ |
@@ -112,7 +125,7 @@ instruction. A runtime test attempting every other instruction as guardian would
 
 | # | Invariant | Test | Status |
 |---|-----------|------|--------|
-| 5.1 | Treasury funds move only under the governance executor's signature | `treasury::only_governance_spends` | ⬜ P2.4 |
+| 5.1 | Treasury funds move only under the governance executor's signature | `treasury_rejects_a_spend_that_is_not_from_governance`, `a_passed_proposal_moves_treasury_funds` | ✅ |
 | 5.2 | HLX is minted only by a registered minter, within its epoch cap | `accrues_within_cap`, `rejects_over_cap_without_mutating` | ◐ |
 | 5.3 | No non-PDA address holds mint authority after `initialize_token` | `token_manager::mint_authority_is_pda` | ⬜ P2 |
 | 5.4 | Admin transfer requires both `propose` and `accept` | `token_manager::two_step_admin` | ⬜ P2 |
