@@ -1,0 +1,226 @@
+//! Phase 3 — is the atomic bootstrap actually possible?
+//!
+//! [F-1](../../../docs/SECURITY-ASSESSMENT.md#f-1--initialisers-are-front-runnable):
+//! `initialize_pool`, `initialize_realm` and `initialize_treasury` each take the
+//! privileged party as an unchecked argument, first-caller-wins, with PDAs seeded
+//! by mints. An observer can front-run them between deploy and bootstrap and
+//! install themselves as authority — permanently, because the seeds are fixed.
+//!
+//! The recommended mitigation is to run all three in a single transaction so no
+//! window exists. That recommendation is worthless if they do not fit: Solana
+//! caps a transaction at 1232 bytes and roughly three dozen accounts.
+//!
+//! This file measures it instead of assuming it.
+
+use anchor_lang::prelude::Pubkey;
+use anchor_spl::token_2022;
+use helix_governance::instructions::realm::RealmParams;
+use helix_integration_tests::bootstrap::default_realm_params;
+use helix_integration_tests::{pda, TestEnv};
+use helix_staking::state::Pool;
+use helix_treasury::state::Treasury;
+use solana_keypair::Keypair;
+use solana_signer::Signer as _;
+
+const DECIMALS: u8 = 9;
+
+/// Builds the three front-runnable initialisers against one mint.
+fn bootstrap_instructions(
+    env: &TestEnv,
+    mint: &Pubkey,
+    guardian: &Pubkey,
+    params: RealmParams,
+) -> Vec<solana_instruction::Instruction> {
+    let payer = env.payer_pubkey();
+
+    let (pool, _) = pda::pool(mint, mint);
+    let (pool_vault_authority, _) = pda::vault_authority(&pool);
+    let (stake_vault, _) = pda::stake_vault(&pool);
+    let (reward_vault, _) = pda::reward_vault(&pool);
+
+    let (realm, _) = pda::realm(&pool);
+    let (executor, _) = pda::executor(&realm);
+
+    let (treasury, _) = pda::treasury(mint);
+    let (treasury_vault, _) = pda::treasury_vault(&treasury);
+    let (treasury_vault_authority, _) = pda::treasury_vault_authority(&treasury);
+
+    vec![
+        TestEnv::ix(
+            helix_staking::ID,
+            helix_staking::accounts::InitializePool {
+                payer,
+                // The pool authority is the realm's executor PDA from the very
+                // first instruction — there is never a moment where a human key
+                // controls emissions.
+                authority: executor,
+                pool,
+                vault_authority: pool_vault_authority,
+                stake_mint: *mint,
+                reward_mint: *mint,
+                stake_vault,
+                reward_vault,
+                token_program: token_2022::ID,
+                system_program: anchor_lang::system_program::ID,
+            },
+            helix_staking::instruction::InitializePool {},
+        ),
+        TestEnv::ix(
+            helix_governance::ID,
+            helix_governance::accounts::InitializeRealm {
+                payer,
+                authority: executor,
+                guardian: *guardian,
+                staking_pool: pool,
+                realm,
+                executor,
+                system_program: anchor_lang::system_program::ID,
+            },
+            helix_governance::instruction::InitializeRealm { params },
+        ),
+        TestEnv::ix(
+            helix_treasury::ID,
+            helix_treasury::accounts::InitializeTreasury {
+                payer,
+                governance_executor: executor,
+                treasury,
+                vault_authority: treasury_vault_authority,
+                mint: *mint,
+                vault: treasury_vault,
+                token_program: token_2022::ID,
+                system_program: anchor_lang::system_program::ID,
+            },
+            helix_treasury::instruction::InitializeTreasury {
+                epoch_spend_cap: 1_000_000_000,
+                epoch_duration: 24 * 3_600,
+            },
+        ),
+    ]
+}
+
+#[test]
+fn the_whole_bootstrap_fits_in_one_transaction() {
+    // The measurement F-1's mitigation depends on.
+    let mut env = TestEnv::new();
+    let mint_authority = Keypair::new();
+    let mint = env
+        .create_mint(DECIMALS, &mint_authority.pubkey(), None)
+        .pubkey();
+    let guardian = Keypair::new().pubkey();
+
+    let ixs = bootstrap_instructions(&env, &mint, &guardian, default_realm_params());
+
+    // One transaction, three programs, no window for anyone to interleave.
+    env.send(&ixs, &[]);
+
+    let (pool, _) = pda::pool(&mint, &mint);
+    let (realm, _) = pda::realm(&pool);
+    let (executor, _) = pda::executor(&realm);
+    let (treasury, _) = pda::treasury(&mint);
+
+    // Everything is wired to governance from the first block it exists.
+    let p: Pool = env.anchor_account(&pool);
+    assert_eq!(
+        p.authority, executor,
+        "the pool must be governance-controlled from the start"
+    );
+
+    let t: Treasury = env.anchor_account(&treasury);
+    assert_eq!(
+        t.governance_executor, executor,
+        "the treasury must accept only the realm executor"
+    );
+}
+
+#[test]
+fn the_bootstrap_transaction_is_within_solana_size_limits() {
+    // A transaction that works under LiteSVM could still be rejected by a real
+    // cluster for exceeding the 1232-byte packet limit, so measure the serialised
+    // size rather than trusting that it executed.
+    const SOLANA_TX_SIZE_LIMIT: usize = 1232;
+
+    let mut env = TestEnv::new();
+    let mint_authority = Keypair::new();
+    let mint = env
+        .create_mint(DECIMALS, &mint_authority.pubkey(), None)
+        .pubkey();
+    let guardian = Keypair::new().pubkey();
+
+    let ixs = bootstrap_instructions(&env, &mint, &guardian, default_realm_params());
+
+    let tx = solana_transaction::Transaction::new_signed_with_payer(
+        &ixs,
+        Some(&env.payer_pubkey()),
+        &[&env.payer],
+        env.svm.latest_blockhash(),
+    );
+
+    let serialised = bincode::serialize(&tx).expect("transaction should serialise");
+    let size = serialised.len();
+    let accounts = tx.message.account_keys.len();
+
+    println!("bootstrap transaction: {size} bytes, {accounts} accounts");
+
+    assert!(
+        size <= SOLANA_TX_SIZE_LIMIT,
+        "bootstrap is {size} bytes, over the {SOLANA_TX_SIZE_LIMIT}-byte limit — \
+         F-1's atomic mitigation would fail on a real cluster and the deployer-gate \
+         fix is required instead"
+    );
+}
+
+#[test]
+fn a_front_runner_cannot_take_the_pool_once_bootstrapped() {
+    // The property the atomic bootstrap buys: after it lands, the PDAs are taken
+    // and an attacker's initialiser fails.
+    let mut env = TestEnv::new();
+    let mint_authority = Keypair::new();
+    let mint = env
+        .create_mint(DECIMALS, &mint_authority.pubkey(), None)
+        .pubkey();
+    let guardian = Keypair::new().pubkey();
+
+    let ixs = bootstrap_instructions(&env, &mint, &guardian, default_realm_params());
+    env.send(&ixs, &[]);
+
+    // An attacker tries to initialise the same pool naming themselves authority.
+    let attacker = Keypair::new();
+    env.svm
+        .airdrop(
+            &attacker.pubkey(),
+            100 * solana_native_token::LAMPORTS_PER_SOL,
+        )
+        .unwrap();
+
+    let (pool, _) = pda::pool(&mint, &mint);
+    let (pool_vault_authority, _) = pda::vault_authority(&pool);
+    let (stake_vault, _) = pda::stake_vault(&pool);
+    let (reward_vault, _) = pda::reward_vault(&pool);
+
+    let ix = TestEnv::ix(
+        helix_staking::ID,
+        helix_staking::accounts::InitializePool {
+            payer: attacker.pubkey(),
+            authority: attacker.pubkey(),
+            pool,
+            vault_authority: pool_vault_authority,
+            stake_mint: mint,
+            reward_mint: mint,
+            stake_vault,
+            reward_vault,
+            token_program: token_2022::ID,
+            system_program: anchor_lang::system_program::ID,
+        },
+        helix_staking::instruction::InitializePool {},
+    );
+
+    assert!(
+        env.try_send(&[ix], &[&attacker]).is_err(),
+        "re-initialising an existing pool must fail"
+    );
+
+    let (realm, _) = pda::realm(&pool);
+    let (executor, _) = pda::executor(&realm);
+    let p: Pool = env.anchor_account(&pool);
+    assert_eq!(p.authority, executor, "authority must be unchanged");
+}

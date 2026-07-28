@@ -10,7 +10,7 @@ is bounded by the honesty of its coverage claims.
 ```bash
 anchor build                                                  # required first — the
                                                               # runtime tests load .so files
-cargo test --workspace                                        # 109 tests: unit + doc + runtime
+cargo test --workspace                                        # 112 tests: unit + doc + runtime
 cargo test -p helix-staking --lib                             # one program's unit tests
 cargo test -p helix-staking --lib -- --nocapture rounding     # one test, with output
 
@@ -30,7 +30,7 @@ status code. See [F-3](./SECURITY-ASSESSMENT.md#f-3--sbf-stack-frame-overflow).
 
 ## What is covered
 
-**65 unit tests** over pure functions and state machines, and **44 runtime tests** against
+**65 unit tests** over pure functions and state machines, and **47 runtime tests** against
 the real BPF programs.
 
 ### Unit tests
@@ -57,6 +57,7 @@ the real BPF programs.
 | `staking_lifecycle.rs` | 12 | §1.2, §1.4, §6.1, §6.2, §6.4, §6.5 — funding, rate solvency, accrual, claim, partial and full unstake, pause semantics, cross-owner claim refused |
 | `governance_e2e.rs` | 14 | §4.1–4.7, §4.11–4.12, §5.1 — the authority chain plus one negative test per threat-model attack |
 | `vesting_e2e.rs` | 12 | §1.5, §1.6, §7.5, §7.7–7.9 — grant → cliff → claim → revoke, forward-only revocation, committed balance protection, executor migration |
+| `bootstrap_atomicity.rs` | 3 | F-1's mitigation: the bootstrap fits one transaction (748 B / 17 accounts, asserted against the 1232-byte limit), and re-initialisation fails afterwards |
 
 ### Testing conventions worth copying
 
@@ -89,7 +90,7 @@ Read this section before trusting anything above.
 |---|---|---|
 | No compute benchmarks | Invariant §6.3 is argued from code structure, not measured | Phase 6 |
 | No fuzzing | Only hand-chosen inputs have been tried | Phase 6 |
-| No deployment-time test for §5.8 | Initialiser front-running (F-1) is mitigated operationally, not tested | Phase 3 |
+| Deployment-time front-running (§5.8) | F-1's *mitigation* is measured and tested; the window before bootstrap lands is not closeable in-program without a deployer gate | Phase 3 |
 | Multi-staker distribution at scale | Two or three positions are exercised, not hundreds | Phase 6 (fuzzing) |
 | Real-cluster behaviour | LiteSVM is faithful but not a validator; no test covers fees, congestion or reorgs | Phase 3 (devnet) |
 

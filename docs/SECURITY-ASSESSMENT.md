@@ -111,6 +111,7 @@ Severity = impact × likelihood, CVSS-style but judged rather than computed.
 | F-6 | Guardian key compromise causes governance denial of service | **Low** | Accepted |
 | F-7 | `Position` accounts are never closed | **Informational** | Open |
 | F-8 | Vesting, spend-cap and executor-migration instructions are unreachable | **Medium** | **Fixed** — found by attempting to test them |
+| F-9 | Token-manager admin cannot be handed to governance | **Low** | Open — same class as F-8 |
 
 ### F-1 — Initialisers are front-runnable *(Medium, open)*
 
@@ -128,17 +129,39 @@ the same instruction as a fresh keypair signer, so an attacker cannot target it.
 
 **Recommended mitigations**, in order of preference:
 
-1. **Bootstrap atomically.** Run all initialisation in a single transaction immediately
-   after deploy, so there is no window. Cheapest and sufficient in practice.
+1. **Bootstrap atomically.** Run all three initialisers in a single transaction
+   immediately after deploy, so no window exists.
 2. **Gate on a known deployer.** Compare the payer against a compile-time constant, or
    against the program's own upgrade authority, and reject otherwise.
-3. **Verify after bootstrap.** Assert the on-chain authorities match what was intended
-   before proceeding — this belongs in the runbook regardless of 1 and 2.
+3. **Verify after bootstrap.** Assert the on-chain authorities match what was intended —
+   this belongs in the runbook regardless of 1 and 2.
 
-Phase 3 of [ROADMAP.md](./ROADMAP.md) adopts (1) and (3); (2) is the stronger fix and
-worth taking if these programs are ever redeployed. Severity is Medium rather than High
-only because the window is short, the exploit is immediately visible, and no user funds
-exist yet at that point.
+**(1) is now measured, not assumed.** A recommendation to "do it atomically" is worthless
+if the transaction does not fit: Solana caps a packet at 1232 bytes and roughly three
+dozen accounts.
+[`bootstrap_atomicity.rs`](../tests/integration/tests/bootstrap_atomicity.rs) builds the
+real transaction and measures it:
+
+```text
+bootstrap transaction: 748 bytes, 17 accounts
+```
+
+Comfortable headroom, and the test asserts the limit so it fails if the bootstrap ever
+grows past it. A companion test confirms that once bootstrapped, an attacker's
+`initialize_pool` against the same mint fails and the authority is unchanged.
+
+Measuring it also produced a better design than the one originally written into the
+runbook. `initialize_pool` and `initialize_treasury` take the privileged party as an
+*argument*, so the bootstrap can name the realm's executor PDA directly at
+initialisation — **there is never a moment when a human key controls emissions or the
+treasury**, and the two-step authority handover the runbook prescribed for them is
+unnecessary. It remains necessary only for the token-manager admin, which has a genuine
+chicken-and-egg: registering the staking program as a minter must happen before
+governance can be asked to do anything.
+
+Severity stays Medium: the window is short, the exploit immediately visible, and no user
+funds exist at that point. (2) remains the stronger fix and is worth taking on any
+redeploy.
 
 ### F-2 — Reward liability computed from deposits *(High, fixed)*
 
@@ -278,6 +301,35 @@ One design note from the fix. `CreateVestingStream` carries no `stream_id`, beca
 correct id is the treasury's `stream_count` at *execution* time and is not knowable when
 the proposal is written. It is supplied as an execution argument and validated by the
 treasury against its own counter, so a caller cannot choose an arbitrary slot.
+
+### F-9 — Token-manager admin cannot be handed to governance *(Low, open)*
+
+The same shape as F-8, found the same way — by writing the deployment sequence down and
+noticing a step that cannot be performed.
+
+The token-manager admin must start as a human key: `register_minter` has to run before the
+staking program can pay rewards, and only the admin can register a minter, so there is no
+way to have governance do it first. The intended end state is to hand the admin to the
+realm's executor PDA afterwards.
+
+`accept_admin` requires the incoming admin to **sign**, and the executor PDA signs only
+inside a governance `execute_*`. There is no `ProposalAction` variant for accepting a
+token-manager admin transfer, so the handover cannot be completed.
+
+Consequence: the mint's admin stays a multisig indefinitely. That admin can register
+minters and pause issuance, but it cannot mint — the mint authority is a PDA no key holds
+— so the blast radius is bounded. Rated Low for that reason, where F-8 was Medium.
+
+Unlike the pool and treasury authorities, this one genuinely cannot be set at
+initialisation, so it needs the missing variant rather than a bootstrap change.
+
+**Fix:** add `AcceptTokenManagerAdmin` to `ProposalAction` with a matching `execute_*`,
+following the F-8 pattern. Half a day with tests.
+
+**Worth generalising.** F-8 and F-9 are the same defect twice: an instruction gated on a
+PDA signature that no code path can produce. A useful review question for any
+multi-program system — *for every privileged instruction, which concrete transaction
+produces its signer?* — and one that a per-program test suite will never ask.
 
 ### F-7 — Position accounts never closed *(Informational, open)*
 

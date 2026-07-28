@@ -180,7 +180,7 @@ deserialisation especially.
 
 ```bash
 anchor build 2>&1 | tee build.log && grep -i "stack offset" build.log  # must be empty
-cargo test --workspace          # 109 tests: unit + doc + runtime
+cargo test --workspace          # 112 tests: unit + doc + runtime
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 

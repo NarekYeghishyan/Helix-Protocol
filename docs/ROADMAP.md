@@ -91,14 +91,29 @@ phase.
 
 | Milestone | Deliverable | Est. |
 |---|---|---|
-| 3.1 | Deploy all four programs to devnet; record IDs in [RUNBOOK.md](./RUNBOOK.md) | 0.5d |
-| 3.2 | Idempotent bootstrap script: mint → pool → realm → treasury, correctly wired | 1d |
-| 3.3 | Verifiable builds (`solana-verify`), so deployed bytecode reproduces from source | 0.5d |
-| 3.4 | Upgrade authority to a 3-of-5 Squads multisig | 0.5d |
+| 3.0 | **Measure** whether the atomic bootstrap fits one transaction | 0.5d | ✅ Done — 748 B / 17 accounts |
+| 3.1 | Fund a devnet keypair (~20 SOL peak) and deploy all four programs | 0.5d | ⬜ blocked on faucet |
+| 3.2 | Idempotent bootstrap script driving the measured single transaction | 1d | ⬜ |
+| 3.3 | Verifiable builds (`solana-verify`), so deployed bytecode reproduces from source | 0.5d | ⬜ |
+| 3.4 | Upgrade authority to a 3-of-5 Squads multisig | 0.5d | ⬜ |
+| 3.5 | **Fix F-9** — `AcceptTokenManagerAdmin` action, so the last authority can migrate | 0.5d | ⬜ |
 
-3.2 is where the authority wiring becomes real: the staking pool's authority must
-become the governance executor PDA, and the treasury's `governance_executor` must match.
-Both are two-step handovers by design, so the script has to drive both halves.
+3.0 turned a recommendation into a fact and improved the design. Because
+`initialize_pool` and `initialize_treasury` take their privileged party as an argument,
+the bootstrap can name the realm's executor PDA at initialisation — there is never a
+moment when a human key controls emissions or the treasury, and the two-step handover this
+roadmap previously assumed for them is unnecessary.
+
+Writing that sequence down exposed
+[F-9](./SECURITY-ASSESSMENT.md#f-9--token-manager-admin-cannot-be-handed-to-governance):
+the token-manager admin *must* start as a human key (only an admin can register the first
+minter), and there is no `ProposalAction` that lets governance accept the handover. Same
+defect as F-8, found the same way.
+
+**Cost note.** The four programs total 1.43 MB, ~9.94 SOL of rent-exemption, and
+deployment needs roughly double that at peak for the buffers. Devnet's CLI airdrop is
+capped at 2 SOL and rate-limits hard, so this needs
+[faucet.solana.com](https://faucet.solana.com) rather than `solana airdrop`.
 
 ## Phase 4 — Indexer and analytics API *(≈4–5 days, medium confidence)*
 

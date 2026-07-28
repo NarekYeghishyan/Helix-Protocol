@@ -59,9 +59,25 @@ anchor build 2>&1 | tee build.log
 
 ## 2. Deploy
 
+**Budget ~10 SOL, and have ~20 available.** Measured rent-exemption cost for the four
+programs, at ~6960 lamports per byte:
+
+| Program | Size | Rent |
+|---|---|---|
+| `helix_governance` | 436,632 B | ~3.04 SOL |
+| `helix_staking` | 364,136 B | ~2.53 SOL |
+| `helix_treasury` | 328,176 B | ~2.28 SOL |
+| `helix_token_manager` | 298,976 B | ~2.08 SOL |
+| **total** | **1,427,920 B** | **~9.94 SOL** |
+
+Deployment writes to a temporary buffer of the same size before finalising, so peak
+requirement is roughly double. Devnet's built-in `solana airdrop` is capped at 2 SOL and
+rate-limits aggressively — expect to use [faucet.solana.com](https://faucet.solana.com)
+(GitHub-authenticated, higher daily limit) rather than the CLI.
+
 ```bash
 solana config set --url devnet
-solana balance                       # ~10 SOL is comfortable for four programs
+solana balance                       # need ~20 SOL headroom
 anchor deploy --provider.cluster devnet
 ```
 
@@ -79,34 +95,47 @@ until the balance is gone.
 > themselves as authority — permanently, since the PDAs are seeded by the mints. See
 > [F-1](./SECURITY-ASSESSMENT.md#f-1--initialisers-are-front-runnable).
 >
-> Build all of step 3 as **one transaction**. Do not run these as separate commands.
+> Build steps 2–4 below as **one transaction**. Do not run them as separate commands.
+>
+> This is measured, not hoped: `bootstrap_atomicity.rs` builds the real transaction and
+> reports **748 bytes across 17 accounts**, against Solana's 1232-byte limit. The test
+> asserts that limit, so it fails if the bootstrap ever grows past it.
 
-Order, because each step depends on the previous:
+The mint is created first and separately — it is a fresh keypair the deployer signs for,
+so it cannot be front-run. The three PDA-seeded initialisers go together.
 
-1. `initialize_token` — creates the HLX mint with a PDA mint authority.
-2. `initialize_pool` — stake mint = HLX, reward mint = HLX; both vaults are PDAs.
-3. `initialize_realm` — over that pool; sets quorum, approval, voting period, timelock,
-   and the guardian.
-4. `initialize_treasury` — `governance_executor` = the realm's executor PDA,
-   `["executor", realm]`.
-5. `register_minter` — authority = the pool's reward-funding PDA, with an epoch cap
-   matching intended emissions.
+1. `initialize_token` — creates the HLX mint with a PDA mint authority. **Admin stays a
+   human key for now**; see step 4.
+2. `initialize_pool` — stake mint = HLX, reward mint = HLX, both vaults PDAs.
+   **`authority` = the realm's executor PDA**, `["executor", realm]`.
+3. `initialize_realm` — over that pool; sets quorum, approval, voting period, timelock and
+   the guardian. `authority` = its own executor PDA, so parameter changes need a vote.
+4. `initialize_treasury` — `governance_executor` = the same executor PDA.
 
-## 4. Wire the authorities
+Note that steps 2–4 name the executor PDA directly. The executor's address is derivable
+before the realm exists, because it is a PDA of a PDA of the pool — so **there is never a
+moment when a human key controls emissions or the treasury**. No handover is required for
+either, and the earlier version of this runbook was wrong to prescribe one.
 
-Until this is done, emissions and treasury are operator-controlled, not DAO-controlled.
-Both handovers are deliberately two-step, so each needs both halves.
+## 4. Hand over the token-manager admin
+
+The one authority that genuinely cannot be set at initialisation.
+
+`register_minter` must run before governance can be asked to do anything useful — the
+staking program has to be a registered minter before it can pay rewards — and only the
+admin can register a minter. So the admin starts as a human key, registers the staking
+minter, and then hands over:
 
 ```text
-staking pool authority   ──▶ realm executor PDA   (propose_authority → accept_authority)
-token-manager admin      ──▶ realm executor PDA   (propose_admin → accept_admin)
+token-manager admin ──▶ realm executor PDA   (propose_admin → accept_admin)
 ```
 
-`accept_*` requires the new authority to **sign**, and the executor PDA can only sign
-inside a governance execution — so the accepting half must be driven by a passed
-proposal. Sequence it as: propose off-chain → create/activate/vote/finalize/queue →
-execute. Budget a full voting period plus timelock for this, and do not treat it as a
-five-minute deployment step.
+`accept_admin` requires the new admin to **sign**, and the executor PDA signs only inside
+a governance execution. There is currently no `ProposalAction` variant for accepting a
+token-manager admin transfer, so completing this handover needs one added — the same class
+of gap as [F-8](./SECURITY-ASSESSMENT.md#f-8--governance-gated-treasury-instructions-are-unreachable),
+found by the same exercise of writing the sequence down. Until then the admin remains a
+multisig, which is a documented limitation rather than a surprise.
 
 ## 5. Verify
 
@@ -117,10 +146,13 @@ anchor idl fetch <PROGRAM_ID> --provider.cluster devnet   # IDL is published
 ```
 
 - [ ] HLX mint authority == `["mint_authority", config]` PDA, and **no keypair holds it**
-- [ ] `pool.authority` == realm executor PDA
-- [ ] `treasury.governance_executor` == realm executor PDA
+- [ ] `pool.authority` == realm executor PDA — set at init, so this should already hold
+- [ ] `treasury.governance_executor` == realm executor PDA — likewise
+- [ ] `realm.authority` == its own executor PDA, so parameter changes require a vote
 - [ ] `realm.guardian` == the intended multisig, and nothing else
-- [ ] `token_config.admin` == intended
+- [ ] `token_config.admin` == the intended multisig (cannot yet be governance — see
+      [F-9](./SECURITY-ASSESSMENT.md#f-9--token-manager-admin-cannot-be-handed-to-governance))
+- [ ] Exactly one registered minter, and it is the staking program's reward PDA
 - [ ] `pool.reward_rate` and `reward_period_end` match intent, and the reward vault
       holds at least `unpaid_liability + emission_for(rate, now)`
 - [ ] `treasury.epoch_spend_cap` is set (a zero cap blocks all spending; an unbounded
