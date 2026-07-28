@@ -15,13 +15,12 @@ An invariant with no test is a design intention, not a guarantee.
 
 Notation: `Σ` sums over all accounts of that type belonging to the pool/realm.
 
-**Current totals across 50 invariants: 40 ✅ · 5 ◐ · 5 ⬜.**
+**Current totals across 52 invariants: 44 ✅ · 3 ◐ · 5 ⬜.**
 
-The authority chain is verified end to end at runtime: a passed, timelocked proposal moves
-treasury funds, and a direct call to the treasury is refused. The Token-2022 fee
-invariants (§2) are verified against a real fee-bearing mint, and the staking withdrawal
-paths (§6) — the ones users depend on to exit — are exercised through claim, partial
-unstake and full unstake.
+Every user-facing flow is now exercised at runtime against the real BPF programs: staking
+deposit and withdrawal, reward accrual and claim, the full governance lifecycle, treasury
+spends, and vesting from grant through cliff and claim to revoke. The Token-2022 fee
+invariants (§2) run against a real fee-bearing mint.
 
 Two things worth knowing about how much to trust these:
 
@@ -36,9 +35,15 @@ was passing for the wrong reason — the guardian had no lamports, so its vote f
 rent rather than on authorisation. Tightening the assertion exposed it. A negative test
 that does not name its expected failure is not a test.
 
-What remains ⬜ is vesting token movement — currently **unreachable on chain**, see
-[F-8](./SECURITY-ASSESSMENT.md#f-8--governance-gated-treasury-instructions-are-unreachable)
-— along with compute benchmarking and the deployment-time invariant §5.8.
+**Writing these tests found a hole no unit test could.** Vesting was unreachable on chain:
+`create_stream` required the governance executor's signature, and `ProposalAction` had no
+variant producing it. Nine unit tests covered arithmetic no transaction could invoke. The
+gap was in what governance is *able to ask for* — see
+[F-8](./SECURITY-ASSESSMENT.md#f-8--governance-gated-treasury-instructions-are-unreachable),
+now fixed, with §7.9 added to keep it fixed.
+
+What remains ⬜ is compute benchmarking (§6.3), the deployment-time invariant §5.8, and
+three aggregate properties that need many accounts to be meaningful — all Phase 3 or 6.
 
 ---
 
@@ -50,8 +55,8 @@ What remains ⬜ is vesting token movement — currently **unreachable on chain*
 | 1.2 | `Σ (position.pending + earned(position)) <= reward_vault.amount` | `the_vault_stays_solvent_across_a_full_cycle`, `an_unfundable_rate_is_refused` | ✅ |
 | 1.3 | `pool.total_staked == Σ position.amount` | `fee_bearing_mint_preserves_vault_solvency` | ✅ |
 | 1.4 | `pool.total_weighted == Σ position.weighted_amount` | `the_vault_stays_solvent_across_a_full_cycle`, `partial_unstake_recomputes_weight_from_the_remainder` | ✅ |
-| 1.5 | `Σ stream.claimed <= Σ stream.total_amount` | `outstanding_tracks_the_unclaimed_remainder` | ◐ |
-| 1.6 | `Σ (stream.total_amount - stream.claimed) <= treasury_vault.amount` | `uncommitted_excludes_stream_obligations` | ◐ |
+| 1.5 | `Σ stream.claimed <= Σ stream.total_amount` | `vesting_completes_and_never_overpays` | ✅ |
+| 1.6 | `Σ (stream.total_amount - stream.claimed) <= treasury_vault.amount` | `a_spend_cannot_touch_tokens_committed_to_a_stream` | ✅ |
 
 1.2 is the one that matters. A reward pool that can promise more than it holds is
 insolvent from that moment, and the failure surfaces much later as a confusing transfer
@@ -163,9 +168,11 @@ deserialisation especially.
 | 7.2 | The cliff releases everything accrued since `start_ts` | `the_cliff_releases_everything_accrued_since_start` | ✅ |
 | 7.3 | Exactly `total_amount` vests by `end_ts`, and never more | `the_full_amount_vests_at_the_end_and_never_more` | ✅ |
 | 7.4 | Truncation favours the treasury, but the endpoint still pays in full | `vesting_truncates_in_the_treasurys_favour` | ✅ |
-| 7.5 | A revoke freezes accrual and never claws back vested tokens | `revoke_freezes_vesting_without_clawing_back` | ✅ |
+| 7.5 | A revoke freezes accrual and never claws back vested tokens | `a_revoke_freezes_accrual_without_clawing_back` (runtime) | ✅ |
 | 7.6 | Already-claimed tokens survive a revoke | `already_claimed_tokens_survive_a_revoke` | ✅ |
-| 7.7 | The unvested remainder returns to the treasury's spendable balance | `unvested_remainder_returns_to_the_treasury` | ✅ |
+| 7.7 | The unvested remainder returns to the treasury's spendable balance | `the_unvested_remainder_returns_to_the_treasury` (runtime) | ✅ |
+| 7.8 | Only the beneficiary may claim a stream | `only_the_beneficiary_can_claim` | ✅ |
+| 7.9 | Every governance-gated treasury instruction is reachable by proposal | `governance_can_create_a_vesting_stream`, `governance_can_hand_the_treasury_to_a_new_executor` | ✅ |
 
 ---
 
@@ -173,7 +180,7 @@ deserialisation especially.
 
 ```bash
 anchor build 2>&1 | tee build.log && grep -i "stack offset" build.log  # must be empty
-cargo test --workspace          # 97 tests: unit + doc + integration
+cargo test --workspace          # 109 tests: unit + doc + runtime
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 

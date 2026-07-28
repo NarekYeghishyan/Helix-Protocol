@@ -184,6 +184,326 @@ pub fn execute_treasury_transfer(ctx: Context<ExecuteTreasuryTransfer>) -> Resul
     Ok(())
 }
 
+// ------------------------------------------------------ Vesting streams
+
+#[derive(Accounts)]
+#[instruction(stream_id: u64)]
+pub struct ExecuteCreateVestingStream<'info> {
+    #[account(
+        seeds = [REALM_SEED, realm.staking_pool.as_ref()],
+        bump = realm.bump,
+    )]
+    pub realm: Account<'info, Realm>,
+
+    #[account(
+        mut,
+        seeds = [
+            PROPOSAL_SEED,
+            realm.key().as_ref(),
+            proposal.id.to_le_bytes().as_ref(),
+        ],
+        bump = proposal.bump,
+        has_one = realm,
+    )]
+    pub proposal: Account<'info, Proposal>,
+
+    /// CHECK: signs for the treasury; identity fixed by seeds.
+    #[account(
+        seeds = [EXECUTOR_SEED, realm.key().as_ref()],
+        bump = realm.executor_bump,
+    )]
+    pub executor: UncheckedAccount<'info>,
+
+    /// Pays rent for the new stream account.
+    #[account(mut)]
+    pub payer: Signer<'info>,
+
+    #[account(mut)]
+    pub treasury: Box<Account<'info, helix_treasury::state::Treasury>>,
+
+    /// CHECK: recorded by the treasury as the only address that may claim. It is
+    /// checked against the proposal's action below, so it cannot be substituted.
+    pub beneficiary: UncheckedAccount<'info>,
+
+    /// CHECK: created by the treasury program, which derives and validates this
+    /// PDA from `stream_id` under its own seeds constraint.
+    #[account(mut)]
+    pub stream: UncheckedAccount<'info>,
+
+    pub treasury_vault: Box<InterfaceAccount<'info, TokenAccount>>,
+
+    pub system_program: Program<'info, System>,
+    pub treasury_program: Program<'info, helix_treasury::program::HelixTreasury>,
+}
+
+/// Creates the vesting stream a passed proposal called for.
+pub fn execute_create_vesting_stream(
+    ctx: Context<ExecuteCreateVestingStream>,
+    stream_id: u64,
+) -> Result<()> {
+    let (beneficiary, total_amount, start_ts, cliff_ts, end_ts) = match ctx.accounts.proposal.action
+    {
+        ProposalAction::CreateVestingStream {
+            beneficiary,
+            total_amount,
+            start_ts,
+            cliff_ts,
+            end_ts,
+        } => (beneficiary, total_amount, start_ts, cliff_ts, end_ts),
+        _ => return Err(GovernanceError::ActionAccountMismatch.into()),
+    };
+
+    // The beneficiary must be the one the voters approved, not one the executing
+    // caller substituted.
+    require_keys_eq!(
+        ctx.accounts.beneficiary.key(),
+        beneficiary,
+        GovernanceError::ActionAccountMismatch
+    );
+
+    let now = Clock::get()?.unix_timestamp;
+    authorize_execution(&mut ctx.accounts.proposal, now)?;
+
+    let realm_key = ctx.accounts.realm.key();
+    let signer_seeds: &[&[&[u8]]] = &[&[
+        EXECUTOR_SEED,
+        realm_key.as_ref(),
+        &[ctx.accounts.realm.executor_bump],
+    ]];
+
+    helix_treasury::cpi::create_stream(
+        CpiContext::new_with_signer(
+            ctx.accounts.treasury_program.key(),
+            helix_treasury::cpi::accounts::CreateStream {
+                treasury: ctx.accounts.treasury.to_account_info(),
+                governance_executor: ctx.accounts.executor.to_account_info(),
+                payer: ctx.accounts.payer.to_account_info(),
+                beneficiary: ctx.accounts.beneficiary.to_account_info(),
+                stream: ctx.accounts.stream.to_account_info(),
+                vault: ctx.accounts.treasury_vault.to_account_info(),
+                system_program: ctx.accounts.system_program.to_account_info(),
+            },
+            signer_seeds,
+        ),
+        stream_id,
+        total_amount,
+        start_ts,
+        cliff_ts,
+        end_ts,
+    )?;
+
+    emit!(ProposalExecuted {
+        proposal: ctx.accounts.proposal.key(),
+        action: ctx.accounts.proposal.action,
+        timestamp: now,
+    });
+
+    Ok(())
+}
+
+#[derive(Accounts)]
+pub struct ExecuteRevokeVestingStream<'info> {
+    #[account(
+        seeds = [REALM_SEED, realm.staking_pool.as_ref()],
+        bump = realm.bump,
+    )]
+    pub realm: Account<'info, Realm>,
+
+    #[account(
+        mut,
+        seeds = [
+            PROPOSAL_SEED,
+            realm.key().as_ref(),
+            proposal.id.to_le_bytes().as_ref(),
+        ],
+        bump = proposal.bump,
+        has_one = realm,
+    )]
+    pub proposal: Account<'info, Proposal>,
+
+    /// CHECK: signs for the treasury; identity fixed by seeds.
+    #[account(
+        seeds = [EXECUTOR_SEED, realm.key().as_ref()],
+        bump = realm.executor_bump,
+    )]
+    pub executor: UncheckedAccount<'info>,
+
+    #[account(mut)]
+    pub treasury: Box<Account<'info, helix_treasury::state::Treasury>>,
+
+    /// Typed rather than unchecked, so the stream's own `stream_id` can be
+    /// compared against the one the proposal named.
+    #[account(mut)]
+    pub stream: Box<Account<'info, helix_treasury::state::VestingStream>>,
+
+    pub treasury_program: Program<'info, helix_treasury::program::HelixTreasury>,
+}
+
+/// Revokes the vesting stream a passed proposal named.
+pub fn execute_revoke_vesting_stream(ctx: Context<ExecuteRevokeVestingStream>) -> Result<()> {
+    let stream_id = match ctx.accounts.proposal.action {
+        ProposalAction::RevokeVestingStream { stream_id } => stream_id,
+        _ => return Err(GovernanceError::ActionAccountMismatch.into()),
+    };
+
+    // Revoking a different stream than the one voted on would be a distinct act.
+    require_eq!(
+        ctx.accounts.stream.stream_id,
+        stream_id,
+        GovernanceError::ActionAccountMismatch
+    );
+
+    let now = Clock::get()?.unix_timestamp;
+    authorize_execution(&mut ctx.accounts.proposal, now)?;
+
+    let realm_key = ctx.accounts.realm.key();
+    let signer_seeds: &[&[&[u8]]] = &[&[
+        EXECUTOR_SEED,
+        realm_key.as_ref(),
+        &[ctx.accounts.realm.executor_bump],
+    ]];
+
+    helix_treasury::cpi::revoke_stream(CpiContext::new_with_signer(
+        ctx.accounts.treasury_program.key(),
+        helix_treasury::cpi::accounts::RevokeStream {
+            treasury: ctx.accounts.treasury.to_account_info(),
+            governance_executor: ctx.accounts.executor.to_account_info(),
+            stream: ctx.accounts.stream.to_account_info(),
+        },
+        signer_seeds,
+    ))?;
+
+    emit!(ProposalExecuted {
+        proposal: ctx.accounts.proposal.key(),
+        action: ctx.accounts.proposal.action,
+        timestamp: now,
+    });
+
+    Ok(())
+}
+
+// -------------------------------------------------- Treasury configuration
+
+#[derive(Accounts)]
+pub struct ExecuteTreasuryConfig<'info> {
+    #[account(
+        seeds = [REALM_SEED, realm.staking_pool.as_ref()],
+        bump = realm.bump,
+    )]
+    pub realm: Account<'info, Realm>,
+
+    #[account(
+        mut,
+        seeds = [
+            PROPOSAL_SEED,
+            realm.key().as_ref(),
+            proposal.id.to_le_bytes().as_ref(),
+        ],
+        bump = proposal.bump,
+        has_one = realm,
+    )]
+    pub proposal: Account<'info, Proposal>,
+
+    /// CHECK: signs for the treasury; identity fixed by seeds.
+    #[account(
+        seeds = [EXECUTOR_SEED, realm.key().as_ref()],
+        bump = realm.executor_bump,
+    )]
+    pub executor: UncheckedAccount<'info>,
+
+    #[account(mut)]
+    pub treasury: Box<Account<'info, helix_treasury::state::Treasury>>,
+
+    pub treasury_program: Program<'info, helix_treasury::program::HelixTreasury>,
+}
+
+impl<'info> ExecuteTreasuryConfig<'info> {
+    fn cpi_accounts(&self) -> helix_treasury::cpi::accounts::GovernanceOnly<'info> {
+        helix_treasury::cpi::accounts::GovernanceOnly {
+            treasury: self.treasury.to_account_info(),
+            governance_executor: self.executor.to_account_info(),
+        }
+    }
+}
+
+/// Adjusts the treasury's per-epoch spend cap.
+pub fn execute_set_treasury_spend_cap(ctx: Context<ExecuteTreasuryConfig>) -> Result<()> {
+    let (new_cap, epoch_duration) = match ctx.accounts.proposal.action {
+        ProposalAction::SetTreasurySpendCap {
+            new_cap,
+            epoch_duration,
+        } => (new_cap, epoch_duration),
+        _ => return Err(GovernanceError::ActionAccountMismatch.into()),
+    };
+
+    let now = Clock::get()?.unix_timestamp;
+    authorize_execution(&mut ctx.accounts.proposal, now)?;
+
+    let realm_key = ctx.accounts.realm.key();
+    let signer_seeds: &[&[&[u8]]] = &[&[
+        EXECUTOR_SEED,
+        realm_key.as_ref(),
+        &[ctx.accounts.realm.executor_bump],
+    ]];
+
+    helix_treasury::cpi::set_spend_cap(
+        CpiContext::new_with_signer(
+            ctx.accounts.treasury_program.key(),
+            ctx.accounts.cpi_accounts(),
+            signer_seeds,
+        ),
+        new_cap,
+        epoch_duration,
+    )?;
+
+    emit!(ProposalExecuted {
+        proposal: ctx.accounts.proposal.key(),
+        action: ctx.accounts.proposal.action,
+        timestamp: now,
+    });
+
+    Ok(())
+}
+
+/// Hands treasury spending rights to a different governance executor.
+///
+/// The migration path: a realm votes to relinquish control of its own treasury.
+/// Deliberately irreversible from this side — once executed, only the *new*
+/// executor can move it again.
+pub fn execute_set_governance_executor(ctx: Context<ExecuteTreasuryConfig>) -> Result<()> {
+    let new_executor = match ctx.accounts.proposal.action {
+        ProposalAction::SetGovernanceExecutor { new_executor } => new_executor,
+        _ => return Err(GovernanceError::ActionAccountMismatch.into()),
+    };
+
+    let now = Clock::get()?.unix_timestamp;
+    authorize_execution(&mut ctx.accounts.proposal, now)?;
+
+    let realm_key = ctx.accounts.realm.key();
+    let signer_seeds: &[&[&[u8]]] = &[&[
+        EXECUTOR_SEED,
+        realm_key.as_ref(),
+        &[ctx.accounts.realm.executor_bump],
+    ]];
+
+    helix_treasury::cpi::set_governance_executor(
+        CpiContext::new_with_signer(
+            ctx.accounts.treasury_program.key(),
+            ctx.accounts.cpi_accounts(),
+            signer_seeds,
+        ),
+        new_executor,
+    )?;
+
+    emit!(ProposalExecuted {
+        proposal: ctx.accounts.proposal.key(),
+        action: ctx.accounts.proposal.action,
+        timestamp: now,
+    });
+
+    Ok(())
+}
+
 // --------------------------------------------------- SetStakingRewardRate
 
 #[derive(Accounts)]

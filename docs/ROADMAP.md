@@ -19,8 +19,8 @@ says how much to trust each one.
 |-------|-------|--------|
 | 0 | Toolchain, workspace, CI | ✅ Done |
 | 1 | Four programs, unit-tested | ✅ Done |
-| 2 | Integration tests against a validator | 🟡 In progress — authority chain + Token-2022 verified; staking withdrawal and vesting remain |
-| 3 | Devnet deployment + verifiable builds | ⬜ Not started |
+| 2 | Integration tests against a validator | ✅ Done — 44 runtime tests; found and fixed F-8 |
+| 3 | Devnet deployment + verifiable builds | ⬜ Not started — **highest priority** |
 | 4 | Indexer + analytics API | ⬜ Not started |
 | 5 | Dashboard + wallet integration | ⬜ Not started |
 | 6 | Fuzzing + external audit prep | ⬜ Not started |
@@ -58,8 +58,8 @@ The top priority. Everything after this depends on it.
 | 2.4 | Governance end-to-end: create → activate → vote → finalize → queue → execute, incl. a treasury spend actually landing | 1–2d | ✅ Done |
 | 2.5 | Negative tests: the attacks in [THREAT-MODEL.md](./THREAT-MODEL.md) must each fail | 1d | ✅ Done |
 | 2.2b | Staking lifecycle: accrue → claim → unlock → unstake, with clock warping | 1d | ✅ Done |
-| 2.6 | **Fix F-8** — add the missing `ProposalAction` variants so vesting, spend-cap and executor migration are reachable at all | 0.5d | ⬜ **next** |
-| 2.7 | Vesting runtime: create → cliff → claim → revoke, with token movement | 1d | ⬜ blocked on 2.6 |
+| 2.6 | **Fix F-8** — add the missing `ProposalAction` variants so vesting, spend-cap and executor migration are reachable at all | 0.5d | ✅ Done |
+| 2.7 | Vesting runtime: create → cliff → claim → revoke, with token movement | 1d | ✅ Done |
 
 **2.3 was the one that mattered most, and it is done.** The programs credit the observed
 vault delta rather than the `amount` argument — correct, but on a plain SPL mint the two

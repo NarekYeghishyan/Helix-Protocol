@@ -28,6 +28,33 @@ pub enum ProposalAction {
         new_rate: u64,
         reward_period_end: i64,
     },
+
+    /// Commit treasury tokens to a linear vesting schedule.
+    ///
+    /// `stream_id` is deliberately absent: it must equal the treasury's current
+    /// `stream_count` at execution time, which is not knowable when the proposal
+    /// is written. It is supplied as an execution argument and validated by the
+    /// treasury, so a caller cannot choose an arbitrary slot.
+    CreateVestingStream {
+        beneficiary: Pubkey,
+        total_amount: u64,
+        start_ts: i64,
+        cliff_ts: i64,
+        end_ts: i64,
+    },
+
+    /// Stop future accrual on a stream. Already-vested tokens stay claimable.
+    RevokeVestingStream { stream_id: u64 },
+
+    /// Adjust the treasury's per-epoch spend cap.
+    SetTreasurySpendCap { new_cap: u64, epoch_duration: i64 },
+
+    /// Hand treasury spending rights to a different governance executor.
+    ///
+    /// The migration path. Without this variant the treasury's
+    /// `set_governance_executor` is unreachable, and a superseded governance
+    /// program can only be replaced by upgrading the treasury program itself.
+    SetGovernanceExecutor { new_executor: Pubkey },
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize, InitSpace, Clone, Copy, PartialEq, Eq, Debug)]

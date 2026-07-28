@@ -84,4 +84,28 @@ pub mod helix_governance {
     ) -> Result<()> {
         instructions::execute::execute_set_staking_reward_rate(ctx)
     }
+
+    /// Creates the vesting stream a passed proposal called for. `stream_id` must
+    /// equal the treasury's current `stream_count`, which the treasury verifies.
+    pub fn execute_create_vesting_stream(
+        ctx: Context<ExecuteCreateVestingStream>,
+        stream_id: u64,
+    ) -> Result<()> {
+        instructions::execute::execute_create_vesting_stream(ctx, stream_id)
+    }
+
+    /// Revokes a vesting stream. Already-vested tokens stay claimable.
+    pub fn execute_revoke_vesting_stream(ctx: Context<ExecuteRevokeVestingStream>) -> Result<()> {
+        instructions::execute::execute_revoke_vesting_stream(ctx)
+    }
+
+    /// Adjusts the treasury's per-epoch spend cap.
+    pub fn execute_set_treasury_spend_cap(ctx: Context<ExecuteTreasuryConfig>) -> Result<()> {
+        instructions::execute::execute_set_treasury_spend_cap(ctx)
+    }
+
+    /// Hands treasury spending rights to a different governance executor.
+    pub fn execute_set_governance_executor(ctx: Context<ExecuteTreasuryConfig>) -> Result<()> {
+        instructions::execute::execute_set_governance_executor(ctx)
+    }
 }

@@ -10,7 +10,7 @@ is bounded by the honesty of its coverage claims.
 ```bash
 anchor build                                                  # required first — the
                                                               # runtime tests load .so files
-cargo test --workspace                                        # 97 tests: unit + doc + runtime
+cargo test --workspace                                        # 109 tests: unit + doc + runtime
 cargo test -p helix-staking --lib                             # one program's unit tests
 cargo test -p helix-staking --lib -- --nocapture rounding     # one test, with output
 
@@ -30,7 +30,7 @@ status code. See [F-3](./SECURITY-ASSESSMENT.md#f-3--sbf-stack-frame-overflow).
 
 ## What is covered
 
-**65 unit tests** over pure functions and state machines, and **32 runtime tests** against
+**65 unit tests** over pure functions and state machines, and **44 runtime tests** against
 the real BPF programs.
 
 ### Unit tests
@@ -56,6 +56,7 @@ the real BPF programs.
 | `staking_transfer_fee.rs` | 4 | §1.1, §1.3, §2.1–§2.3 against a real 1% transfer-fee mint |
 | `staking_lifecycle.rs` | 12 | §1.2, §1.4, §6.1, §6.2, §6.4, §6.5 — funding, rate solvency, accrual, claim, partial and full unstake, pause semantics, cross-owner claim refused |
 | `governance_e2e.rs` | 14 | §4.1–4.7, §4.11–4.12, §5.1 — the authority chain plus one negative test per threat-model attack |
+| `vesting_e2e.rs` | 12 | §1.5, §1.6, §7.5, §7.7–7.9 — grant → cliff → claim → revoke, forward-only revocation, committed balance protection, executor migration |
 
 ### Testing conventions worth copying
 
@@ -86,23 +87,29 @@ Read this section before trusting anything above.
 
 | Gap | Consequence | Fix |
 |---|---|---|
-| **No vesting runtime tests** | Blocked: vesting is currently *unreachable on chain* — see below | [ROADMAP](./ROADMAP.md) 2.6 then 2.7 |
 | No compute benchmarks | Invariant §6.3 is argued from code structure, not measured | Phase 6 |
 | No fuzzing | Only hand-chosen inputs have been tried | Phase 6 |
 | No deployment-time test for §5.8 | Initialiser front-running (F-1) is mitigated operationally, not tested | Phase 3 |
-| Multi-staker reward distribution at scale | Two positions are exercised, not hundreds | Phase 6 (fuzzing) |
+| Multi-staker distribution at scale | Two or three positions are exercised, not hundreds | Phase 6 (fuzzing) |
+| Real-cluster behaviour | LiteSVM is faithful but not a validator; no test covers fees, congestion or reorgs | Phase 3 (devnet) |
 
-### The vesting gap is not just missing tests
+### What integration testing found that unit testing could not
 
-Writing the vesting runtime test found that **there is no way to construct a transaction
-that creates a stream**. `create_stream`, `revoke_stream`, `set_spend_cap` and
-`set_governance_executor` all require the governance executor's signature, and
-`ProposalAction` has no variant that produces it for them — only `spend` is reachable.
+Two findings, both structural rather than arithmetic:
 
-Every unit test passed. The code compiled. The CPI wiring was correct. The gap was in what
-governance is *able to ask for*, which is not a property any unit test observes. Recorded
-as [F-8](./SECURITY-ASSESSMENT.md#f-8--governance-gated-treasury-instructions-are-unreachable);
-the fix precedes the tests.
+**Vesting was unreachable on chain.** `create_stream` requires the governance executor's
+signature, and `ProposalAction` had no variant producing it — so no transaction could
+create a stream. Nine unit tests covered arithmetic no caller could invoke. Every unit
+test passed, the code compiled, and the CPI wiring was correct; the gap was in what
+governance is *able to ask for*.
+[F-8](./SECURITY-ASSESSMENT.md#f-8--governance-gated-treasury-instructions-are-unreachable),
+now fixed and covered by `vesting_e2e.rs`.
+
+**The reward solvency guard could never approve any rate.** Both halves were individually
+tested and individually correct; the defect was in their composition.
+[F-2](./SECURITY-ASSESSMENT.md#f-2--reward-liability-computed-from-deposits).
+
+The pattern is the same in both: the bug lived in the space *between* correct units.
 
 ## Integration tests
 

@@ -548,4 +548,118 @@ impl System {
         let voter = self.voter.insecure_clone();
         self.env.try_send(&[ix], &[&voter])
     }
+
+    // ------------------------------------------------------- vesting streams
+
+    pub fn execute_create_stream_ix(
+        &self,
+        proposal: Pubkey,
+        stream_id: u64,
+        beneficiary: Pubkey,
+    ) -> solana_instruction::Instruction {
+        let (stream, _) = pda::stream(&self.treasury, stream_id);
+        TestEnv::ix(
+            helix_governance::ID,
+            helix_governance::accounts::ExecuteCreateVestingStream {
+                realm: self.realm,
+                proposal,
+                executor: self.executor,
+                payer: self.env.payer_pubkey(),
+                treasury: self.treasury,
+                beneficiary,
+                stream,
+                treasury_vault: self.treasury_vault,
+                system_program: anchor_lang::system_program::ID,
+                treasury_program: helix_treasury::ID,
+            },
+            helix_governance::instruction::ExecuteCreateVestingStream { stream_id },
+        )
+    }
+
+    pub fn execute_revoke_stream_ix(
+        &self,
+        proposal: Pubkey,
+        stream_id: u64,
+    ) -> solana_instruction::Instruction {
+        let (stream, _) = pda::stream(&self.treasury, stream_id);
+        TestEnv::ix(
+            helix_governance::ID,
+            helix_governance::accounts::ExecuteRevokeVestingStream {
+                realm: self.realm,
+                proposal,
+                executor: self.executor,
+                treasury: self.treasury,
+                stream,
+                treasury_program: helix_treasury::ID,
+            },
+            helix_governance::instruction::ExecuteRevokeVestingStream {},
+        )
+    }
+
+    pub fn execute_treasury_config_ix(
+        &self,
+        proposal: Pubkey,
+        spend_cap: bool,
+    ) -> solana_instruction::Instruction {
+        let accounts = helix_governance::accounts::ExecuteTreasuryConfig {
+            realm: self.realm,
+            proposal,
+            executor: self.executor,
+            treasury: self.treasury,
+            treasury_program: helix_treasury::ID,
+        };
+        if spend_cap {
+            TestEnv::ix(
+                helix_governance::ID,
+                accounts,
+                helix_governance::instruction::ExecuteSetTreasurySpendCap {},
+            )
+        } else {
+            TestEnv::ix(
+                helix_governance::ID,
+                accounts,
+                helix_governance::instruction::ExecuteSetGovernanceExecutor {},
+            )
+        }
+    }
+
+    pub fn claim_stream_ix(
+        &self,
+        stream_id: u64,
+        beneficiary: Pubkey,
+        beneficiary_tokens: Pubkey,
+    ) -> solana_instruction::Instruction {
+        let (stream, _) = pda::stream(&self.treasury, stream_id);
+        TestEnv::ix(
+            helix_treasury::ID,
+            helix_treasury::accounts::ClaimStream {
+                treasury: self.treasury,
+                stream,
+                beneficiary,
+                mint: self.mint,
+                vault: self.treasury_vault,
+                beneficiary_token_account: beneficiary_tokens,
+                vault_authority: self.treasury_vault_authority,
+                token_program: token_2022::ID,
+            },
+            helix_treasury::instruction::ClaimStream {},
+        )
+    }
+
+    /// Drives any proposal through to the point of execution.
+    pub fn pass_proposal(
+        &mut self,
+        proposal_id: u64,
+        action: ProposalAction,
+        position: Pubkey,
+    ) -> Pubkey {
+        let proposal = self.create_proposal(proposal_id, action, position);
+        self.activate(proposal);
+        self.vote(proposal, position, VoteChoice::For);
+        self.env.warp_forward(HOUR + 1);
+        self.finalize(proposal);
+        self.queue(proposal);
+        self.env.warp_forward(HOUR + 1);
+        proposal
+    }
 }

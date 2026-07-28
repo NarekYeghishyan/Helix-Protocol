@@ -13,6 +13,8 @@ cargo test --workspace
 | [`integration/tests/smoke.rs`](./integration/tests/smoke.rs) | All four programs load and are executable; program IDs are distinct |
 | [`integration/tests/staking_transfer_fee.rs`](./integration/tests/staking_transfer_fee.rs) | Invariants §1.1, §1.3, §2.1–§2.3 — Token-2022 transfer fees |
 | [`integration/tests/governance_e2e.rs`](./integration/tests/governance_e2e.rs) | §4.1–4.7, §4.11–4.12, §5.1 — the authority chain, plus a negative test per threat-model attack |
+| [`integration/tests/staking_lifecycle.rs`](./integration/tests/staking_lifecycle.rs) | §1.2, §1.4, §6.1–6.5 — accrual, claim, partial and full unstake, pause semantics |
+| [`integration/tests/vesting_e2e.rs`](./integration/tests/vesting_e2e.rs) | §1.5, §1.6, §7.5, §7.7–7.9 — grant → cliff → claim → revoke, and F-8's regression check |
 | [`integration/src/lib.rs`](./integration/src/lib.rs) | Harness: mint creation with extensions, clock warping, PDA derivations |
 | [`integration/src/bootstrap.rs`](./integration/src/bootstrap.rs) | A fully wired system — pool, realm, treasury, authorities connected |
 
@@ -70,7 +72,23 @@ Tightening the assertion exposed it immediately.
 its own (`custom program error: 0x1771`) says nothing while the log line names the
 constraint.
 
+## Watch out for these when adding tests
+
+**Warping past a lock expires your vote.** A Gold position locks for 180 days; warp a year
+and it can no longer satisfy `lock_end >= voting_ends_at`. That is the flash-loan gate
+working correctly — stake a fresh position for the later proposal rather than weakening the
+gate.
+
+**Governance takes cluster time.** Driving a proposal through its voting period and
+timelock consumes a couple of hours before anything executes, so "one year later" is a
+little more than a year of vesting. Compute expected values from the schedule and the
+observed clock rather than hardcoding round numbers.
+
+**Put the right key in the signer slot.** Building an instruction with one pubkey in a
+`Signer` field and signing with a different key panics at `Transaction::sign` — the program
+never runs, so the test proves nothing while appearing to fail correctly.
+
 ## Still missing
 
-Staking's withdrawal lifecycle (accrue → claim → unlock → unstake) and vesting token
-movement. Tracked as Phase 2.2b and 2.6 in [ROADMAP.md](../docs/ROADMAP.md).
+Compute benchmarks and fuzzing (Phase 6), and anything that needs a real validator rather
+than LiteSVM — fees, congestion, reorgs (Phase 3). See [ROADMAP.md](../docs/ROADMAP.md).

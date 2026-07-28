@@ -110,7 +110,7 @@ Severity = impact × likelihood, CVSS-style but judged rather than computed.
 | F-5 | Upgrade authority not migrated to governance | **Critical** (if deployed) | Open — Phase 7 |
 | F-6 | Guardian key compromise causes governance denial of service | **Low** | Accepted |
 | F-7 | `Position` accounts are never closed | **Informational** | Open |
-| F-8 | Vesting, spend-cap and executor-migration instructions are unreachable | **Medium** | Open — found by attempting to test them |
+| F-8 | Vesting, spend-cap and executor-migration instructions are unreachable | **Medium** | **Fixed** — found by attempting to test them |
 
 ### F-1 — Initialisers are front-runnable *(Medium, open)*
 
@@ -223,7 +223,7 @@ cannot cause anything to happen — only prevent it. Accepted as the deliberate 
 having a veto at all; mitigated by holding the guardian key in a multisig and by the
 realm's ability to vote in a new one, provided a proposal can pass first.
 
-### F-8 — Governance-gated treasury instructions are unreachable *(Medium, open)*
+### F-8 — Governance-gated treasury instructions are unreachable *(Medium, fixed)*
 
 Four treasury instructions require a signature from `governance_executor`:
 
@@ -261,9 +261,23 @@ was no way to construct a transaction that creates a stream. Every unit test pas
 code compiled, and the CPI wiring was correct. The gap was in what governance is *able to
 ask for*, which is not a property any unit test observes.
 
-**Fix:** add `CreateVestingStream`, `RevokeVestingStream`, `SetTreasurySpendCap` and
-`SetGovernanceExecutor` variants to `ProposalAction`, with one `execute_*` instruction
-each, following `execute_treasury_transfer`. Roughly half a day including runtime tests.
+**Fixed** by adding `CreateVestingStream`, `RevokeVestingStream`, `SetTreasurySpendCap`
+and `SetGovernanceExecutor` to `ProposalAction`, each with its own `execute_*` instruction
+following the `execute_treasury_transfer` pattern — typed accounts, parameters
+destructured from `proposal.action` rather than taken from the caller, and a
+`require_keys_eq!` on any account the proposal named.
+
+Verified by twelve runtime tests in
+[`vesting_e2e.rs`](../tests/integration/tests/vesting_e2e.rs), including the full
+grant → cliff → claim → revoke cycle, that a revoke is forward-only, that a spend cannot
+touch tokens committed to a stream (§1.6), and that a realm can hand its treasury to a
+successor executor and then no longer spend from it. Those tests are themselves the
+regression check: none of them can even be written if the variants are removed.
+
+One design note from the fix. `CreateVestingStream` carries no `stream_id`, because the
+correct id is the treasury's `stream_count` at *execution* time and is not knowable when
+the proposal is written. It is supplied as an execution argument and validated by the
+treasury against its own counter, so a caller cannot choose an arbitrary slot.
 
 ### F-7 — Position accounts never closed *(Informational, open)*
 

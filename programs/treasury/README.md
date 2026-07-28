@@ -61,13 +61,12 @@ receives exactly `total_amount` in the end, never less.
 deliberately no admin override — one would make every other guarantee here conditional on
 whoever holds it.
 
-> **Known gap (F-8).** `create_stream`, `revoke_stream`, `set_spend_cap` and
-> `set_governance_executor` all require the executor's signature, but `helix-governance`
-> currently has no `ProposalAction` variant that produces it for them — only `spend` is
-> reachable. So vesting is presently unreachable on chain, the spend cap is immutable
-> after initialisation, and governance migration is not yet possible. Found by attempting
-> to write the vesting runtime test; see
-> [SECURITY-ASSESSMENT.md F-8](../../docs/SECURITY-ASSESSMENT.md#f-8--governance-gated-treasury-instructions-are-unreachable).
+Every governance-gated instruction here is reachable through a matching
+`ProposalAction` variant — `spend`, `create_stream`, `revoke_stream`, `set_spend_cap` and
+`set_governance_executor`. That was not true initially: the variants for the last four
+were missing, so vesting was dead code and migration impossible. The gap was found by
+attempting to write the vesting runtime test and is recorded as
+[F-8](../../docs/SECURITY-ASSESSMENT.md#f-8--governance-gated-treasury-instructions-are-unreachable).
 
 ## Tests
 
