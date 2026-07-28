@@ -20,7 +20,7 @@ says how much to trust each one.
 | 0 | Toolchain, workspace, CI | ✅ Done |
 | 1 | Four programs, unit-tested | ✅ Done |
 | 2 | Integration tests against a validator | ✅ Done — 74 runtime tests; found and fixed F-8 |
-| 3 | Devnet deployment + verifiable builds | ◐ Bootstrap measured, F-9 fixed; the deploy itself is blocked on devnet funding — **highest priority** |
+| 3 | Devnet deployment + verifiable builds | ◐ Bootstrap measured and planned by a tested tool, F-9 fixed; the deploy itself is blocked on devnet funding — **highest priority** |
 | 4 | Indexer + analytics API | ◐ Decode, ingestion and the read API built and tested; the RPC client and storage binding are the remainder |
 | 5 | Dashboard + wallet integration | ◐ Analytics views, wallet connection and cluster switching built; transaction flows need a deployment |
 | 6 | Fuzzing + external audit prep | ✅ Done — compute benchmarked, fuzzing found F-10, audit scoped in [AUDIT-READINESS.md](./AUDIT-READINESS.md) |
@@ -102,7 +102,7 @@ phase.
 |---|---|---|
 | 3.0 | **Measure** whether the atomic bootstrap fits one transaction | 0.5d | ✅ Done — 748 B / 17 accounts |
 | 3.1 | Fund a devnet keypair (~20 SOL peak) and deploy all four programs | 0.5d | ⬜ blocked on faucet |
-| 3.2 | Idempotent bootstrap script driving the measured single transaction | 1d | ⬜ |
+| 3.2 | Bootstrap planner driving the measured single transaction | 1d | ✅ Done — [`ops/`](../ops); submission still needs a funded key |
 | 3.3 | Verifiable builds (`solana-verify`), so deployed bytecode reproduces from source | 0.5d | ⬜ |
 | 3.4 | Upgrade authority to a 3-of-5 Squads multisig | 0.5d | ⬜ |
 | 3.5 | **Fix F-9** — the whole token-manager admin surface, so the last authority can migrate | 0.5d | ✅ Done |
@@ -118,6 +118,24 @@ Writing that sequence down exposed
 the token-manager admin *must* start as a human key (only an admin can register the first
 minter), and there is no `ProposalAction` that lets governance accept the handover. Same
 defect as F-8, found the same way.
+
+**3.2 is a planner, not a script, and it is tested by being executed.** The bootstrap is a
+one-shot transaction against an open front-running window — there is no rehearsal, and a
+wrong account is discovered on mainnet at the one moment an attacker is watching for it.
+So the instruction set lives in [`ops/`](../ops) as a library, `helix-bootstrap` prints it,
+and [`bootstrap_atomicity.rs`](../tests/integration/tests/bootstrap_atomicity.rs) executes
+**that same function** against the real BPF programs. The plan an operator reads is the
+plan the suite has run, rather than a second implementation that resembles it.
+
+The tool reports the transaction size against the 1232-byte cap, every derived address, and
+who will hold each authority afterwards — and **refuses to emit anything** if an authority
+would be a key rather than the executor PDA. A separate test asserts the size it reports is
+the size that actually gets sent, because a reassuring wrong number is worse than none.
+
+It does not submit. `solana-rpc-client` is at 4.2.0-rc while this workspace resolves the
+Solana crates at 3.x, and the graph already carries eight duplicated `solana-*` crates;
+adding a second major version of the SDK to send one transaction is the trade that ruled
+out Trident. `--json` emits the instructions for whatever client the operator already has.
 
 **Cost note.** The four programs total 1.43 MB, ~9.94 SOL of rent-exemption, and
 deployment needs roughly double that at peak for the buffers. Devnet's CLI airdrop is

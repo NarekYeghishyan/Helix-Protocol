@@ -23,6 +23,11 @@ helix-treasury = { path = "../../programs/treasury", features = ["no-entrypoint"
 # with the chain needs a chain, and this is where one is.
 helix-indexer = { path = "../../indexer" }
 
+# Likewise the deployment plan: `bootstrap_atomicity.rs` executes the very
+# instructions `helix-bootstrap` emits, so the plan an operator reads is the plan
+# the suite has run.
+helix-ops = { path = "../../ops" }
+
 # Pinned deliberately. litesvm 0.14+ tracks a newer Solana than anchor-lang 1.1.2
 # does, which puts two versions of `wincode` in the graph and breaks the sysvar
 # traits with an error that reads like a bug in litesvm rather than a version

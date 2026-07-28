@@ -11,12 +11,19 @@
 //! caps a transaction at 1232 bytes and roughly three dozen accounts.
 //!
 //! This file measures it instead of assuming it.
+//!
+//! The instructions come from [`helix_ops::plan`], which is what
+//! `helix-bootstrap` prints for an operator to read before sending. That is the
+//! point of the arrangement: a one-shot transaction against a front-running
+//! window cannot be rehearsed on the day, so **the plan an operator reads is the
+//! plan this suite has executed** rather than a second implementation of it that
+//! happens to look similar.
 
 use anchor_lang::prelude::Pubkey;
 use anchor_spl::token_2022;
-use helix_governance::instructions::realm::RealmParams;
 use helix_integration_tests::bootstrap::default_realm_params;
 use helix_integration_tests::{pda, TestEnv};
+use helix_ops::BootstrapConfig;
 use helix_staking::state::Pool;
 use helix_treasury::state::Treasury;
 use solana_keypair::Keypair;
@@ -24,78 +31,16 @@ use solana_signer::Signer as _;
 
 const DECIMALS: u8 = 9;
 
-/// Builds the three front-runnable initialisers against one mint.
-fn bootstrap_instructions(
-    env: &TestEnv,
-    mint: &Pubkey,
-    guardian: &Pubkey,
-    params: RealmParams,
-) -> Vec<solana_instruction::Instruction> {
-    let payer = env.payer_pubkey();
-
-    let (pool, _) = pda::pool(mint, mint);
-    let (pool_vault_authority, _) = pda::vault_authority(&pool);
-    let (stake_vault, _) = pda::stake_vault(&pool);
-    let (reward_vault, _) = pda::reward_vault(&pool);
-
-    let (realm, _) = pda::realm(&pool);
-    let (executor, _) = pda::executor(&realm);
-
-    let (treasury, _) = pda::treasury(mint);
-    let (treasury_vault, _) = pda::treasury_vault(&treasury);
-    let (treasury_vault_authority, _) = pda::treasury_vault_authority(&treasury);
-
-    vec![
-        TestEnv::ix(
-            helix_staking::ID,
-            helix_staking::accounts::InitializePool {
-                payer,
-                // The pool authority is the realm's executor PDA from the very
-                // first instruction — there is never a moment where a human key
-                // controls emissions.
-                authority: executor,
-                pool,
-                vault_authority: pool_vault_authority,
-                stake_mint: *mint,
-                reward_mint: *mint,
-                stake_vault,
-                reward_vault,
-                token_program: token_2022::ID,
-                system_program: anchor_lang::system_program::ID,
-            },
-            helix_staking::instruction::InitializePool {},
-        ),
-        TestEnv::ix(
-            helix_governance::ID,
-            helix_governance::accounts::InitializeRealm {
-                payer,
-                authority: executor,
-                guardian: *guardian,
-                staking_pool: pool,
-                realm,
-                executor,
-                system_program: anchor_lang::system_program::ID,
-            },
-            helix_governance::instruction::InitializeRealm { params },
-        ),
-        TestEnv::ix(
-            helix_treasury::ID,
-            helix_treasury::accounts::InitializeTreasury {
-                payer,
-                governance_executor: executor,
-                treasury,
-                vault_authority: treasury_vault_authority,
-                mint: *mint,
-                vault: treasury_vault,
-                token_program: token_2022::ID,
-                system_program: anchor_lang::system_program::ID,
-            },
-            helix_treasury::instruction::InitializeTreasury {
-                epoch_spend_cap: 1_000_000_000,
-                epoch_duration: 24 * 3_600,
-            },
-        ),
-    ]
+/// The plan `helix-bootstrap` would emit for this mint.
+fn bootstrap_plan(env: &TestEnv, mint: &Pubkey, guardian: &Pubkey) -> helix_ops::Plan {
+    helix_ops::plan(&BootstrapConfig {
+        payer: env.payer_pubkey(),
+        mint: *mint,
+        guardian: *guardian,
+        realm: default_realm_params(),
+        epoch_spend_cap: 1_000_000_000,
+        epoch_duration: 24 * 3_600,
+    })
 }
 
 #[test]
@@ -108,10 +53,10 @@ fn the_whole_bootstrap_fits_in_one_transaction() {
         .pubkey();
     let guardian = Keypair::new().pubkey();
 
-    let ixs = bootstrap_instructions(&env, &mint, &guardian, default_realm_params());
+    let plan = bootstrap_plan(&env, &mint, &guardian);
 
     // One transaction, three programs, no window for anyone to interleave.
-    env.send(&ixs, &[]);
+    env.send(&plan.instructions, &[]);
 
     let (pool, _) = pda::pool(&mint, &mint);
     let (realm, _) = pda::realm(&pool);
@@ -146,10 +91,10 @@ fn the_bootstrap_transaction_is_within_solana_size_limits() {
         .pubkey();
     let guardian = Keypair::new().pubkey();
 
-    let ixs = bootstrap_instructions(&env, &mint, &guardian, default_realm_params());
+    let plan = bootstrap_plan(&env, &mint, &guardian);
 
     let tx = solana_transaction::Transaction::new_signed_with_payer(
-        &ixs,
+        &plan.instructions,
         Some(&env.payer_pubkey()),
         &[&env.payer],
         env.svm.latest_blockhash(),
@@ -169,6 +114,39 @@ fn the_bootstrap_transaction_is_within_solana_size_limits() {
     );
 }
 
+/// The size `helix-bootstrap` prints is the size that actually gets sent.
+///
+/// The tool reports a figure an operator uses to decide whether the atomic
+/// mitigation is available at all. If it measured a differently-shaped
+/// transaction from the one the suite executes, the number would be reassuring
+/// and wrong — which is worse than not printing it.
+#[test]
+fn the_reported_transaction_size_matches_the_real_one() {
+    let mut env = TestEnv::new();
+    let mint_authority = Keypair::new();
+    let mint = env
+        .create_mint(DECIMALS, &mint_authority.pubkey(), None)
+        .pubkey();
+    let guardian = Keypair::new().pubkey();
+
+    let plan = bootstrap_plan(&env, &mint, &guardian);
+
+    let signed = solana_transaction::Transaction::new_signed_with_payer(
+        &plan.instructions,
+        Some(&env.payer_pubkey()),
+        &[&env.payer],
+        env.svm.latest_blockhash(),
+    );
+    let actual = bincode::serialize(&signed).expect("serialise").len();
+
+    assert_eq!(
+        plan.transaction_size(),
+        actual,
+        "the tool would report a size the operator cannot rely on"
+    );
+    assert_eq!(plan.account_count(), signed.message.account_keys.len());
+}
+
 #[test]
 fn a_front_runner_cannot_take_the_pool_once_bootstrapped() {
     // The property the atomic bootstrap buys: after it lands, the PDAs are taken
@@ -180,8 +158,8 @@ fn a_front_runner_cannot_take_the_pool_once_bootstrapped() {
         .pubkey();
     let guardian = Keypair::new().pubkey();
 
-    let ixs = bootstrap_instructions(&env, &mint, &guardian, default_realm_params());
-    env.send(&ixs, &[]);
+    let plan = bootstrap_plan(&env, &mint, &guardian);
+    env.send(&plan.instructions, &[]);
 
     // An attacker tries to initialise the same pool naming themselves authority.
     let attacker = Keypair::new();

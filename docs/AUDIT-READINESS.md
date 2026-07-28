@@ -26,8 +26,9 @@ the count.
 Anchor 1.1.2, Solana 3.1.10, Token-2022. Line counts include unit tests and doc comments,
 which are a large share — the programs themselves are smaller than the figure suggests.
 
-**Out of scope for an audit:** [`indexer/`](../indexer) and
-[`tests/`](../tests) hold no funds and sign nothing. They are worth reading as evidence
+**Out of scope for an audit:** [`indexer/`](../indexer), [`ops/`](../ops) and
+[`tests/`](../tests) hold no funds and sign nothing — though `ops/` decides what the
+bootstrap transaction *contains*, which is worth a read for that reason. They are worth reading as evidence
 about the programs, not as attack surface.
 
 **Deliberately not built**, so absence reads as a decision rather than an oversight:
@@ -38,7 +39,7 @@ liquid staking derivatives. Reasons in [ROADMAP.md](./ROADMAP.md#explicitly-out-
 
 | | |
 |---|---|
-| Tests | 185 — 103 unit, 82 runtime against the real BPF programs |
+| Tests | 192 — 109 unit, 83 runtime against the real BPF programs |
 | Invariants | 57 documented, 54 verified, 3 untested — [INVARIANTS.md](./INVARIANTS.md) |
 | Fuzzing | Stateful, invariants as the oracle, 22 sequences × 150 operations per run |
 | Compute | Every instruction measured; worst is 17.9% of the default budget |

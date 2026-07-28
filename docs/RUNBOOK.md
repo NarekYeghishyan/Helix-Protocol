@@ -44,7 +44,7 @@ Every item must pass. This is a gate, not a checklist to skim.
 ```bash
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace --lib
+cargo test --workspace
 anchor build 2>&1 | tee build.log
 ```
 
@@ -53,8 +53,8 @@ anchor build 2>&1 | tee build.log
       frame overflows as errors and *still exits 0* — the exit code cannot be trusted.
       See [F-3](./SECURITY-ASSESSMENT.md#f-3--sbf-stack-frame-overflow).
 - [ ] `anchor keys verify` — declared IDs match the keypairs
-- [ ] Integration tests pass (**blocked**: Phase 2 not built — do not deploy anything
-      holding value until this line can be ticked)
+- [ ] Runtime tests pass — `cargo test --workspace` covers the unit, doc and 83 runtime
+      tests, including the fuzz campaign
 - [ ] `cargo audit` clean
 
 ## 2. Deploy
@@ -116,6 +116,34 @@ Note that steps 2–4 name the executor PDA directly. The executor's address is 
 before the realm exists, because it is a PDA of a PDA of the pool — so **there is never a
 moment when a human key controls emissions or the treasury**. No handover is required for
 either, and the earlier version of this runbook was wrong to prescribe one.
+
+### Build it with the planner, and read the plan first
+
+```bash
+cargo run -p helix-ops --bin helix-bootstrap -- \
+    --payer <DEPLOYER> --mint <HLX_MINT> --guardian <MULTISIG>
+```
+
+It prints the transaction size against the 1232-byte cap, every derived address, and who
+will hold each authority once it lands. **Read that last section before sending anything** —
+it is the only chance to notice that an authority is a key rather than the executor PDA,
+and the tool refuses to emit at all if one is.
+
+```bash
+# ... and the instructions, for whatever client will sign and send them:
+cargo run -p helix-ops --bin helix-bootstrap -- ... --json > bootstrap.json
+```
+
+The instruction set is not a transcription of the list above: it is
+[`helix_ops::plan`](../ops/src/lib.rs), and
+[`bootstrap_atomicity.rs`](../tests/integration/tests/bootstrap_atomicity.rs) executes that
+same function against the real programs. **The plan you are about to send is the plan the
+test suite has run.** Most deployment scripts are written once, run once, and tested never;
+this one is exercised on every push.
+
+The tool does not submit. That is deliberate — see the note in
+[`ops/Cargo.toml`](../ops/Cargo.toml) — and it also means the last human check is not
+optional: nothing goes out until someone signs it.
 
 ## 4. Hand over the token-manager admin
 
