@@ -25,8 +25,16 @@ helix-treasury = { path = "../programs/treasury", features = ["no-entrypoint"] }
 # Anchor writes event payloads as base64 on `Program data:` lines.
 base64 = "0.22"
 
-# Already in the graph via anchor-lang, so this adds nothing new.
+# Already in the graph via anchor-lang, so these add nothing new.
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# The RPC source talks JSON-RPC over HTTP itself rather than through
+# `solana-rpc-client`, which is published at 4.2.0-rc against a workspace that
+# resolves the Solana crates at 3.x — see `rpc.rs` for the full reasoning. ureq
+# is blocking, which is what `LogSource` is; an async client would mean an
+# executor in a crate that otherwise has no I/O.
+ureq = { version = "3", features = ["json"], optional = true }
 
 # The HTTP transport is optional. The read model in `api.rs` is pure and always
 # compiled; only the wiring in `server.rs` needs a runtime, and keeping it behind
@@ -36,15 +44,21 @@ serde = { version = "1", features = ["derive"] }
 axum = { version = "0.8", optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"], optional = true }
 
-[dev-dependencies]
-serde_json = "1"
-
 [features]
 default = []
 server = ["dep:axum", "dep:tokio"]
+
+# The only part of this crate that opens a socket. Off by default for the same
+# reason `server` is: `cargo test --workspace` should not build a TLS stack to
+# test a fold. CI lints with `--all-features`.
+rpc = ["dep:ureq"]
 
 # Cargo builds every `src/bin/*.rs` by default, so without this the binary is
 # compiled even when the feature that supplies its dependencies is off.
 [[bin]]
 name = "helix-api"
 required-features = ["server"]
+
+[[bin]]
+name = "helix-index"
+required-features = ["rpc"]

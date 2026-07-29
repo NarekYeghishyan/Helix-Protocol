@@ -7,20 +7,24 @@ history is reconstructable from transaction logs without polling account state.
 This crate does the reconstructing — decode, attribute, fold.
 
 ```bash
-cargo test -p helix-indexer                                        # 38 unit tests
-cargo test -p helix-indexer --features server                       # 40, incl. the transport
+cargo test -p helix-indexer                                        # 44 unit tests
+cargo test -p helix-indexer --all-features                          # incl. transport + RPC
 cargo test -p helix-integration-tests --test indexer_reconciliation # 8 against the chain
+HELIX_RPC_URL=http://127.0.0.1:8899 \
+  cargo test -p helix-integration-tests --test rpc_source_live -- --test-threads=1  # 6 live
 ```
 
 ## What it is not
 
-There is no RPC client, no database driver and no network I/O anywhere in this
-crate. That is deliberate, not unfinished.
+There is no database driver, and **no network I/O in anything compiled by
+default**. Talking to a cluster is one module, [`rpc.rs`](./src/rpc.rs), behind a
+feature that is off.
 
-Ingestion is the part that cannot be tested without a cluster. Decoding and
-folding are the parts where the bugs that corrupt analytics actually live. Keeping
-them pure means they can be tested against the real programs **today**, before
-anything is deployed — which is what [`indexer_reconciliation.rs`](../tests/integration/tests/indexer_reconciliation.rs)
+That is deliberate, not unfinished. Ingestion is the part that cannot be tested
+without a cluster. Decoding and folding are the parts where the bugs that corrupt
+analytics actually live. Keeping the default build pure means they can be tested
+against the real programs **today** — which is what
+[`indexer_reconciliation.rs`](../tests/integration/tests/indexer_reconciliation.rs)
 does: real transactions, the runtime's own logs, and the resulting projection
 compared to the accounts those transactions wrote, field by field.
 
@@ -30,10 +34,44 @@ rumour.
 The same split runs through ingestion. *Deciding* what to do with what a source returns —
 holding the unfinalised tail, noticing it has been replaced, rebuilding, promoting to
 final, advancing the cursor — is [`ingest.rs`](./src/ingest.rs) and is tested against a
-scripted source that rolls slots back on demand. *Talking to an RPC node* is the
-`LogSource` implementation that does not exist yet. Devnet cannot be asked to fork; a fake
-can. What remains is that client, the Postgres binding and the read API —
-[Phase 4 remainder](../docs/ROADMAP.md#phase-4--indexer-and-analytics-api).
+scripted source that rolls slots back on demand, because a cluster cannot be asked to
+fork. *Talking to an RPC node* is [`rpc.rs`](./src/rpc.rs), tested against a validator
+with the four programs deployed. What remains is the Postgres binding —
+[Phase 4.2](../docs/ROADMAP.md#phase-4--indexer-and-analytics-api).
+
+## The RPC source
+
+```bash
+cargo run -p helix-indexer --features rpc --bin helix-index -- \
+  --url http://127.0.0.1:8899 --once
+```
+
+```text
+following http://127.0.0.1:8899 — Ctrl-C to stop
++3 applied, 0 finalized | cursor slot 0 | 3 unfinalized | 1 pools, 2 positions,
+0 proposals, 1 treasuries | 0 orphaned
+```
+
+It speaks JSON-RPC directly rather than through `solana-rpc-client`, which is published at
+4.2.0-rc while this workspace resolves the Solana crates at 3.x — the version split that
+also ruled out Trident. The surface an indexer needs is three read methods carrying no
+signatures and no account decoding, so the trade was a large graph for a thin wrapper.
+
+Four things a real endpoint does that a fake would not have taught us, each producing a
+projection that is merely *incorrect* rather than one that errors:
+
+| | |
+|---|---|
+| `getSignaturesForAddress` answers **newest-first** | `LogSource` is specified in ledger order, and running totals are *assigned*, so a reversed batch settles on the oldest value in it |
+| `limit` counts **from the newest end** | "the 100 after my cursor" is not expressible; the walk descends to the cursor and reverses, and refuses rather than guesses past `max_scan` |
+| **Failed transactions are in the signature list** | their writes were rolled back and their events are still in the log |
+| **`logMessages` is nullable** | a node with logs disabled answers successfully and reports that nothing was emitted |
+
+All four are asserted in
+[`rpc_source_live.rs`](../tests/integration/tests/rpc_source_live.rs) or in `rpc.rs`'s own
+tests. Three of those assertions were vacuous when first written and were only found by
+mutation testing — see
+[TESTING.md](../docs/TESTING.md#the-live-tests-and-the-three-that-were-not-testing-their-claims).
 
 ## Why Rust, and why it links the programs
 
@@ -168,6 +206,7 @@ are now recorded in `orphaned`.
 | [`projection.rs`](./src/projection.rs) | Folding events into queryable state, exactly once each |
 | [`source.rs`](./src/source.rs) | The `LogSource` trait, and a scripted source that can roll a slot back on demand |
 | [`ingest.rs`](./src/ingest.rs) | Driving a source into the projection, safely across reorgs |
+| [`rpc.rs`](./src/rpc.rs) | The one module that opens a socket, behind the `rpc` feature |
 | [`api.rs`](./src/api.rs) | The read model — pure functions from a projection to serialisable views |
 | [`server.rs`](./src/server.rs) | HTTP transport, behind the `server` feature |
 | [`sql/schema.sql`](./sql/schema.sql) | Postgres DDL for the persistent form — **written, not yet exercised** |
@@ -186,9 +225,10 @@ GET /realms/{address}/proposals
 GET /treasuries/{address}
 ```
 
-It serves an empty projection until the RPC `LogSource` exists. That is stated on startup
-rather than hidden, because a demo that looks live and is not is worse than one that says
-so.
+It serves whatever projection it is given, and holds nothing across a restart — there is
+no storage binding yet (Phase 4.2), so a fresh process starts from an empty projection
+until something has polled a cluster into it. That is stated on startup rather than
+hidden, because a demo that looks live and is not is worse than one that says so.
 
 Three decisions shape every response, each because the obvious alternative is quietly
 wrong.

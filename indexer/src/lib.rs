@@ -3,21 +3,24 @@
 //! Every state transition in the four programs emits an Anchor event carrying an
 //! on-chain timestamp, so history is reconstructable from logs without polling
 //! account state. This crate is the part that does the reconstructing: decode,
-//! attribute, fold. What it deliberately is *not* is a daemon — there is no RPC
-//! client, no database driver and no network I/O anywhere in it.
+//! attribute, fold.
 //!
-//! That separation is the point. Ingestion is the part that cannot be tested
-//! without a cluster; decoding and folding are the parts where the bugs that
-//! corrupt analytics actually live, and keeping them pure means they can be
-//! tested against the real programs today, before anything is deployed.
+//! **Everything compiled by default is pure.** Network I/O exists in exactly one
+//! module, [`rpc`], behind a feature that is off — so the default build has no
+//! socket in it, and the parts where analytics bugs actually live are testable
+//! without a cluster. That is the separation the whole crate is arranged around:
+//! ingestion is what cannot be verified offline, so it is made as small as it
+//! can be and pushed to one edge rather than threaded through the fold.
 //!
 //! # Layers
 //!
 //! | Module | Responsibility |
 //! |---|---|
-//! | [`event`] | The 35 event types, and decoding one from its wire form |
+//! | [`event`] | The 36 event types, and decoding one from its wire form |
 //! | [`logs`] | Attributing `Program data:` lines to the invocation that emitted them |
 //! | [`projection`] | Folding events into queryable state, exactly once each |
+//! | [`ingest`] | Driving a source into two projections, safely across reorgs |
+//! | `rpc` | The one module that opens a socket, behind the `rpc` feature |
 //!
 //! # How it is verified
 //!
@@ -45,6 +48,8 @@ pub mod event;
 pub mod ingest;
 pub mod logs;
 pub mod projection;
+#[cfg(feature = "rpc")]
+pub mod rpc;
 #[cfg(feature = "server")]
 pub mod server;
 pub mod source;
@@ -54,4 +59,6 @@ pub use event::{HelixEvent, Program};
 pub use ingest::{IngestError, Ingestor, PollOutcome};
 pub use logs::{parse, Anomaly, EmittedEvent, ParsedLogs};
 pub use projection::{Analytics, EventId};
+#[cfg(feature = "rpc")]
+pub use rpc::{Commitment, RpcError, RpcLogSource};
 pub use source::{Cursor, LogSource, TransactionLogs};

@@ -22,6 +22,7 @@ use spl_token_2022::extension::ExtensionType;
 use spl_token_2022::state::{Account as T22Account, Mint as T22Mint};
 
 pub mod bootstrap;
+pub mod cluster;
 pub mod fuzz;
 pub use bootstrap::{Staker, System};
 

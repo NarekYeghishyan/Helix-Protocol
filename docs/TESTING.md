@@ -10,16 +10,44 @@ is bounded by the honesty of its coverage claims.
 ```bash
 anchor build                                                  # required first — the
                                                               # runtime tests load .so files
-cargo test --workspace                                        # 212 tests: unit + doc + runtime
+cargo test --workspace                                        # 222 tests: unit + doc + runtime
 cargo test -p helix-staking --lib                             # one program's unit tests
 cargo test -p helix-staking --lib -- --nocapture rounding     # one test, with output
 
-cargo clippy --workspace --all-targets -- -D warnings
+cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo fmt --all -- --check
 
 anchor build 2>&1 | tee build.log
 grep -i "stack offset" build.log     # MUST be empty — see below
 ```
+
+`--all-features` matters: the indexer's `rpc` and `server` modules are the only ones that
+open a socket and are both off by default, so a plain `clippy` never looks at them.
+
+### Running the six live tests
+
+Six tests need an RPC endpoint rather than LiteSVM. They **skip and pass** when
+`HELIX_RPC_URL` is unset, which is why the count above is the same either way.
+
+```bash
+solana-test-validator --reset &                # a real cluster, no faucet needed
+for p in helix_token_manager helix_staking helix_governance helix_treasury; do
+  solana -u localhost program deploy \
+    --program-id target/deploy/$p-keypair.json target/deploy/$p.so
+done
+
+HELIX_RPC_URL=http://127.0.0.1:8899 \
+  cargo test -p helix-integration-tests --test rpc_source_live -- --test-threads=1
+```
+
+`--test-threads=1` because they share one ledger, and one of them asserts that a poll
+picked up exactly the transactions it sent.
+
+**A local validator is a real cluster.** Devnet deployment is blocked on faucet funding,
+but nothing about `getSignaturesForAddress` or `getTransaction` needs devnet specifically —
+and a local validator airdrops without limit. What it still cannot do is fork, which is
+why reorg handling is tested against a scripted source instead
+([`ingest.rs`](../indexer/src/ingest.rs)).
 
 ### Two non-obvious steps
 
@@ -42,8 +70,14 @@ code you did not expect.
 
 ## What is covered
 
-**117 unit tests** over pure functions and state machines, and **95 runtime tests** against
-the real BPF programs.
+**121 unit tests** over pure functions and state machines, **95 runtime tests** against the
+real BPF programs under LiteSVM, and **6 live tests** against a validator over JSON-RPC.
+
+The three tiers are not a hierarchy but a statement about what each can prove. Unit tests
+reach arithmetic and state machines; LiteSVM reaches the wiring between programs; only a
+cluster reaches the transport. Each tier is used for the smallest set of claims that
+genuinely needs it, and the live tier is the smallest of the three by design — see
+[`indexer/src/rpc.rs`](../indexer/src/rpc.rs).
 
 ### Unit tests
 
@@ -66,6 +100,7 @@ the real BPF programs.
 | Deployment plan | 9 | The payer ends up controlling nothing, addresses derive from the mint alone, the transaction fits a packet, the JSON form keeps signer and writable flags, and the post-deploy audit names every authority that drifted — including the guardian |
 | Position closing | 3 | An empty position is closable and a weight-bearing one is not; settling an empty position is a no-op at any accumulator value, which is why `close_position` needs no settlement step |
 | Read API | 6 | The two finality views differ and each says which it is, a u64 past 2^53 survives a JSON round trip, undefined APR is null, small shares do not round away |
+| RPC source | 4 | A JSON-RPC error object is an error despite the HTTP 200; a null `logMessages` and an unknown signature each decode as *absent* rather than as a transaction that emitted nothing; every program is followed by default |
 
 ### Runtime tests
 
@@ -84,6 +119,17 @@ the real BPF programs.
 | `fuzz_invariants.rs` | 7 | §1.1–1.4, §3.1–3.2, §4.1, §4.3, §4.5–4.6 asserted after every operation of 22 random sequences, plus the tests that keep the campaign honest |
 | `realm_authority.rs` | 6 | §4.14, §4.15 — F-11: the realm's parameters reachable by proposal, the human authority revocable, and the attack that was possible before both |
 | `indexer_reconciliation.rs` | 8 | The [indexer's](../indexer) projection compared to on-chain accounts field by field, over the staking lifecycle, a fee-bearing mint, the governance lifecycle including nested CPI, replay, and partial history |
+
+### Live tests
+
+Against a validator, not LiteSVM. Skipped unless `HELIX_RPC_URL` is set.
+
+| File | Tests | What is asserted |
+|---|---|---|
+| `rpc_source_live.rs` | 6 | Phase 4.1 — a projection built over `getSignaturesForAddress` + `getTransaction` matches the accounts on chain; ledger order survives *inside* a slot; a rolled-back transaction whose log still carries its events contributes nothing; a cursor advanced by real finality neither replays nor reads as a fork; the finalized watermark is read from the cluster and moves; one transaction reported under three addresses is folded once |
+
+These are also where `helix_ops::plan` — the bootstrap an operator sends — is submitted to
+something with a mempool for the first time, rather than only executed in-process.
 
 ### Testing conventions worth copying
 
@@ -384,6 +430,60 @@ address was reoccupied, and the new position sits beneath a `position_count_snap
 before it existed, which is [F-10](./SECURITY-ASSESSMENT.md#f-10--post-snapshot-weight-could-vote)
 reopened by a change about reclaiming rent. Two assertions, each catching it independently,
 which is what you want for a property this indirect.
+
+### The live tests, and the three that were not testing their claims
+
+The RPC source was written against four documented hazards, with a test named for each.
+All six live tests passed on the first run. Then each hazard was injected, and **three of
+the four went undetected**:
+
+```text
+mutation                        first written        after rework
+--------------------------------------------------------------
+reverse() removed               NOT CAUGHT           CAUGHT
+`err` filter removed            NOT CAUGHT           CAUGHT
+signature dedup removed         CAUGHT               CAUGHT
+`until` sig instead of slot     NOT CAUGHT           still not caught — see below
+```
+
+Each survivor was a different way of being vacuous, and none was visible by reading:
+
+- **Ledger order.** `fetch` sorts the merged batch by slot, so the reversal only changes
+  the order of transactions *sharing* a slot — and a test that confirms each transaction
+  before sending the next never produces two. It now bursts six treasury deposits on one
+  blockhash and asserts that at least two really did land together, because otherwise the
+  test proves nothing and says so.
+- **Failed transactions.** The original sent a stake that failed on its only instruction,
+  which never reaches the `emit!` — so the log carried no event and there was nothing for
+  the missing filter to fold. It now sends two instructions where the first succeeds and
+  emits, and asserts the failed transaction's log really does contain a `Program data:`
+  line before concluding anything from its absence downstream.
+- **Cursor resumption.** The original polled until nothing new arrived and stopped. The
+  cursor only advances as slots *finalise*, which lags confirmation by tens of slots, so
+  it had never left its default and the source was never given a cursor at all. It now
+  waits for real finality, with a deadline.
+
+**The fourth mutation is not caught because it is not a bug**, which took measuring the
+node to establish rather than reasoning about it. The concern was that `until` names a
+signature three of the four followed addresses have never seen. Against Agave 3.1.10:
+
+```text
+getSignaturesForAddress(governance, until=<a staking-only signature>)
+  -> 0 results; governance had 2 transactions below that slot, none returned
+     => `until` is resolved to the signature's slot GLOBALLY, not within the address
+
+getSignaturesForAddress(treasury, until=<earliest of 6 in one slot>)
+  -> 5 of 5 same-slot siblings returned
+     => and it is exclusive at signature granularity when it can be
+```
+
+So both forms are correct here. The slot form is kept for two reasons that need no
+measurement — `until` requires the node to still hold that signature in a
+transaction-status index that is pruned, and the slot form is what makes resuming
+mid-slot expressible — but the earlier claim that the signature form was *wrong* was
+itself wrong, and is corrected in [`rpc.rs`](../indexer/src/rpc.rs). **A mutation that
+survives is a result, not a gap to be papered over with a test that manufactures a
+failure.**
 
 ## CI
 

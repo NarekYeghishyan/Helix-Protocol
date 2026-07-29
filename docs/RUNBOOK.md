@@ -55,6 +55,12 @@ anchor build 2>&1 | tee build.log
 - [ ] `anchor keys verify` — declared IDs match the keypairs
 - [ ] Runtime tests pass — `cargo test --workspace` covers the unit, doc and 95 runtime
       tests, including the fuzz campaign
+- [ ] **Rehearse against a local validator.** `solana-test-validator --reset`, deploy all
+      four, then run the six live tests with `HELIX_RPC_URL` set
+      ([TESTING.md](./TESTING.md#running-the-six-live-tests)). This is the only step that
+      exercises the bootstrap transaction through preflight and a mempool rather than
+      in-process, and it costs nothing — the one-shot transaction in step 2 is the worst
+      possible place to discover that a plan only works under LiteSVM
 - [ ] `cargo audit` clean
 
 ## 2. Deploy

@@ -8,11 +8,12 @@ Rust with the Anchor framework.
 [![Solana](https://img.shields.io/badge/solana-3.x-purple)](https://solana.com)
 [![License](https://img.shields.io/badge/license-Apache--2.0-green)](./LICENSE)
 
-> **Status: unaudited. Not deployed.** All four programs build to BPF and pass 212 tests
-> locally, including runtime tests that execute the full governance → treasury authority
-> chain and a real Token-2022 mint with transfer fees. The analytics stack and a devnet
-> deployment are scoped in [ROADMAP.md](./docs/ROADMAP.md). Nothing here has held real
-> value. See [SECURITY.md](./SECURITY.md).
+> **Status: unaudited. Not deployed to a public cluster.** All four programs build to BPF
+> and pass 222 tests locally, including runtime tests that execute the full governance →
+> treasury authority chain and a real Token-2022 mint with transfer fees, and six that run
+> against a local validator with the programs actually deployed. A devnet deployment and
+> the storage binding are scoped in [ROADMAP.md](./docs/ROADMAP.md). Nothing here has held
+> real value. See [SECURITY.md](./SECURITY.md).
 
 Four programs that compose into one system. Nothing here wraps an existing protocol —
 the reward accounting, the vote-weight mechanism and the governance state machine are
@@ -146,8 +147,8 @@ one is Anchor's.
 ```bash
 anchor build 2>&1 | tee build.log  # not optional — see below
 grep -i "stack offset" build.log   # must be empty — anchor build exits 0 even when it isn't
-cargo test --workspace             # 212 tests: unit + doc + runtime
-cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace             # 222 tests: unit + doc + runtime
+cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo fmt --all -- --check
 ```
 
@@ -157,7 +158,7 @@ a program that is not the one in front of you. That is not hypothetical — it h
 mutation-testing this repo, and the symptom was six unrelated failures with a misleading
 error code.
 
-**117 unit tests** cover the reward accumulator, vesting schedule, tally arithmetic and
+**121 unit tests** cover the reward accumulator, vesting schedule, tally arithmetic and
 every state machine directly — including a differential check that fixed-point rounding
 never favours the user over the pool.
 
@@ -167,6 +168,12 @@ passed, timelocked proposal moving treasury funds), the staking withdrawal paths
 negative test for each attack in the [threat model](./docs/THREAT-MODEL.md) — direct
 treasury calls, pre-timelock execution, double execution, double voting, flash-staked
 voting, and substituted destinations.
+
+**6 live tests** run against a validator rather than LiteSVM, covering the one thing
+in-process execution cannot reach: reading the programs back over JSON-RPC. They skip
+unless `HELIX_RPC_URL` is set, so the count above is the same either way. A local
+`solana-test-validator` is enough — the deployment blocked on faucet funding is devnet
+specifically, not a cluster.
 
 All **58 documented invariants are now verified** — tracked row by row in
 [INVARIANTS.md](./docs/INVARIANTS.md). Getting the last three there was not a matter of

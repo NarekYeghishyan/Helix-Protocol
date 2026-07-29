@@ -32,6 +32,14 @@ macro_rules! helix_events {
         }
 
         impl Program {
+            /// Every program the protocol is made of.
+            ///
+            /// Generated from the same list as the variants, so a fifth program
+            /// is followed by anything iterating this without a second edit —
+            /// notably the RPC source, which would otherwise go on quietly
+            /// indexing four addresses out of five.
+            pub const ALL: &'static [Program] = &[ $( Self::$program, )* ];
+
             /// Which of ours a program id belongs to, if any.
             ///
             /// Returning `None` for everything else is what lets the log parser

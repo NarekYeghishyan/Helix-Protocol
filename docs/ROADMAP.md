@@ -20,8 +20,8 @@ says how much to trust each one.
 | 0 | Toolchain, workspace, CI | ✅ Done |
 | 1 | Four programs, unit-tested | ✅ Done |
 | 2 | Integration tests against a validator | ✅ Done — 74 runtime tests; found and fixed F-8 |
-| 3 | Devnet deployment + verifiable builds | ◐ Bootstrap measured, planned and *verifiable after the fact*; F-9 fixed; the deploy itself is blocked on devnet funding — **highest priority** |
-| 4 | Indexer + analytics API | ◐ Decode, ingestion and the read API built and tested; the RPC client and storage binding are the remainder |
+| 3 | Devnet deployment + verifiable builds | ◐ Bootstrap measured, planned, *verifiable after the fact*, and now submitted to a real cluster; F-9 fixed; the devnet deploy itself is blocked on funding |
+| 4 | Indexer + analytics API | ◐ Decode, ingestion, the RPC source and the read API built and tested against a live cluster; the storage binding is the remainder — **highest priority** |
 | 5 | Dashboard + wallet integration | ◐ Analytics views, wallet connection and cluster switching built; transaction flows need a deployment |
 | 6 | Fuzzing + external audit prep | ✅ Done — compute benchmarked, fuzzing found F-10, audit scoped in [AUDIT-READINESS.md](./AUDIT-READINESS.md) |
 | 7 | Governance migration (burn the admin keys) | ◐ 7.1 and 7.2 reachable and tested — F-11 fixed; 7.3 needs a deployment |
@@ -34,20 +34,30 @@ The ordering follows one rule: **retire the largest unknown next**, not the most
 visible feature.
 
 That unknown used to be the cross-program wiring, which had only been proven to
-*compile*. It is now executed end to end by 80 runtime tests and driven in random order by
+*compile*. It is now executed end to end by 95 runtime tests and driven in random order by
 a fuzzer, and along the way it produced F-8, F-9, F-10 and F-11 — so the rule paid for
 itself and that particular unknown is retired.
 
-**The largest unknown now is ingestion, not the protocol.** An indexer folding confirmed
-transactions straight into one projection has no way to un-fold the ones a fork takes
-back; it will be wrong, and quietly, because nothing about the arithmetic looks unusual
-afterwards. That is a bug class the programs cannot have and the dashboard cannot detect.
+Ingestion was the next one, and it is now retired too. The reorg half was always testable
+offline and was done first; the transport half needed a cluster, which turned out not to
+need devnet — `solana-test-validator` is a real RPC endpoint that airdrops without limit,
+so the only thing the faucet was ever blocking was *devnet specifically*. The programs are
+deployed to one, the bootstrap has been submitted to one, and the projection is compared
+against accounts read back over JSON-RPC. What a local validator still cannot do is fork,
+which is why reorg handling stays on a scripted source.
 
-A dashboard is what a stakeholder can see, so there is real pressure to build it early.
-It is still the wrong call, for a reason that has simply moved: it would now sit on top of
-a data pipeline with no source. A demo over unproven programs creates confidence the
-system does not deserve; a demo over invented data creates confidence in numbers that
-came from nowhere.
+**The largest unknown now is persistence.** Everything the indexer knows is in memory, so
+a restart re-reads the chain from genesis — which works today because the ledger is small
+and stops working at exactly the point it matters. The schema is written and reviewed;
+nothing executes it, and an untested `ON CONFLICT` clause is a claim rather than a
+guarantee.
+
+A dashboard is what a stakeholder can see, so there is real pressure to finish it early.
+It is still the wrong call, for a reason that has simply moved: its write flows need a
+deployment, and its read flows now have a source that cannot survive a restart. A demo
+over unproven programs creates confidence the system does not deserve; a demo over numbers
+that vanish on restart creates confidence in a pipeline that has not been asked to keep
+anything.
 
 ---
 
@@ -138,6 +148,12 @@ Solana crates at 3.x, and the graph already carries eight duplicated `solana-*` 
 adding a second major version of the SDK to send one transaction is the trade that ruled
 out Trident. `--json` emits the instructions for whatever client the operator already has.
 
+**It has now been sent, though not to devnet.** `rpc_source_live.rs` bootstraps against a
+local validator using `helix_ops::plan` — the same function `helix-bootstrap` prints — so
+the transaction has been through preflight, a mempool and confirmation rather than only
+through LiteSVM. That is not the same as a devnet deploy, and 3.1 stays open; what it
+retires is the possibility that the plan only works in-process.
+
 **3.6 is the half that was missing, and it is the half that answers a different question.**
 Everything in 3.2 is *what will happen*. `--verify` is *what did* — it takes the four
 authorities as read off the chain and names each one that is not what the plan said, exit
@@ -153,6 +169,13 @@ deployment needs roughly double that at peak for the buffers. Devnet's CLI airdr
 capped at 2 SOL and rate-limits hard, so this needs
 [faucet.solana.com](https://faucet.solana.com) rather than `solana airdrop`.
 
+**What is blocked is devnet, not deployment.** All four programs deploy cleanly to a local
+validator under the upgradeable loader at the IDs in `Anchor.toml`, and the live tests run
+against them there. So the loader path, the program IDs, the bootstrap transaction and the
+indexer are all exercised; what devnet adds is a shared cluster others can point at, real
+rent, and a real upgrade authority to migrate in 7.3. That is worth doing and it is not
+where the risk was.
+
 ## Phase 4 — Indexer and analytics API
 
 *≈4–5 days, medium confidence*
@@ -164,9 +187,9 @@ nothing yet talks to a cluster or a database.
 | Milestone | Deliverable | Est. | Status |
 |---|---|---|---|
 | 4.0 | Event decoding and log attribution, reconciled against the chain | 1.5d | ✅ Done |
-| 4.1 | Event subscriber over RPC logs, with reorg handling | 1.5d | ◐ Reorg handling, finality watermark and cursor built and tested; the RPC client is the remainder |
-| 4.2 | Postgres schema + idempotent upserts keyed on `(signature, log_index)` | 1d | ◐ Schema written, binding not |
-| 4.3 | Backfill from genesis slot, resumable | 1d | ◐ Paging and cursor resumption tested; needs a real source to run against |
+| 4.1 | Event subscriber over RPC logs, with reorg handling | 1.5d | ✅ Done — [`rpc.rs`](../indexer/src/rpc.rs) + `helix-index`, verified against a validator |
+| 4.2 | Postgres schema + idempotent upserts keyed on `(signature, log_index)` | 1d | ◐ Schema written, binding not — **now the priority** |
+| 4.3 | Backfill from genesis slot, resumable | 1d | ◐ Paging and cursor resumption tested against a live cluster; the descent below `max_scan` is refused rather than served |
 | 4.4 | Read API: TVL, APR, staker distribution, proposal history, treasury flows | 1d | ✅ Done — [`api.rs`](../indexer/src/api.rs) + an axum transport behind the `server` feature |
 
 **4.0 is deliberately the half that can be verified without a cluster.** Ingestion cannot
@@ -185,12 +208,26 @@ with nothing marking the figure as computed from partial history. Both fixed; se
 
 **4.1 and 4.3 are split the same way 4.0 was**, and for the same reason: the parts that
 cannot be tested without a cluster are separated from the parts where the bugs live.
-[`source.rs`](../indexer/src/source.rs) is a `LogSource` trait; the RPC implementation of
-it is the only piece still missing. Everything that *decides what to do* with what a
-source returns — hold the unfinalised tail, detect that it has been replaced, rebuild,
-promote to final, advance the cursor — is in [`ingest.rs`](../indexer/src/ingest.rs) and
-is driven by a scripted source that can roll a slot back on demand. Devnet cannot be asked
-to fork; a fake can.
+[`source.rs`](../indexer/src/source.rs) is a `LogSource` trait. Everything that *decides
+what to do* with what a source returns — hold the unfinalised tail, detect that it has
+been replaced, rebuild, promote to final, advance the cursor — is in
+[`ingest.rs`](../indexer/src/ingest.rs) and is driven by a scripted source that can roll a
+slot back on demand. Devnet cannot be asked to fork; a fake can.
+
+**The RPC half is now written, and it speaks JSON-RPC rather than using an SDK client.**
+`solana-rpc-client` is at 4.2.0-rc while this workspace resolves the Solana crates at 3.x
+— the same version split that ruled out Trident — and the whole surface an indexer needs
+is three read methods carrying no signatures and no account decoding. It lives behind an
+`rpc` feature that is off by default, so the crate's default build still has no socket in
+it and `cargo test --workspace` still does not build a TLS stack to test a fold.
+
+It is verified by [`rpc_source_live.rs`](../tests/integration/tests/rpc_source_live.rs)
+against a validator with the four programs actually deployed. That mattered more than
+expected: **three of its six tests passed while testing nothing**, and only mutation
+testing said so — the details are in
+[TESTING.md](./TESTING.md#the-live-tests-and-the-three-that-were-not-testing-their-claims),
+including a fourth mutation that survives because measuring the node showed the hazard was
+not real.
 
 The design is two projections and a replay buffer. `finalized` never rewinds, `head` is
 what queries read, and a reorg rebuilds `head` from `finalized` rather than trying to

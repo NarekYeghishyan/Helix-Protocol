@@ -39,12 +39,12 @@ liquid staking derivatives. Reasons in [ROADMAP.md](./ROADMAP.md#explicitly-out-
 
 | | |
 |---|---|
-| Tests | 212 — 117 unit, 95 runtime against the real BPF programs |
+| Tests | 222 — 121 unit, 95 runtime against the real BPF programs, 6 live against a validator |
 | Invariants | 58 documented, all verified — [INVARIANTS.md](./INVARIANTS.md) |
 | Fuzzing | Stateful, invariants as the oracle, 22 sequences × 150 operations per run |
 | Compute | Every instruction measured; worst is 17.9% of the default budget |
 | Lints | `clippy -D warnings`, `fmt --check`, `cargo audit`, all clean in CI |
-| Deployed | **No.** Nothing has executed against a real cluster |
+| Deployed | **Not to a public cluster.** All four deploy under the upgradeable loader to a local validator, where the bootstrap transaction and the indexer are exercised against a real RPC. Devnet is blocked on faucet funding, and the upgrade authority is therefore still a local key — [F-5](./SECURITY-ASSESSMENT.md) |
 
 ## 3. Where the findings came from
 

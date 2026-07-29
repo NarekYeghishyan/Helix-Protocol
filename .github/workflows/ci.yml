@@ -155,11 +155,18 @@ jobs:
       - name: Rust tests (unit + doc + runtime)
         run: cargo test --workspace
 
-      # The read API's HTTP transport is behind a feature, so `--workspace`
-      # alone never compiles it. Targeted rather than `--all-features`, which
-      # would also switch on Anchor's `idl-build` and break the program crates.
-      - name: Read API transport
-        run: cargo test -p helix-indexer --features server
+      # The read API's HTTP transport and the RPC source are behind features, so
+      # `--workspace` alone never compiles either. Targeted rather than a
+      # workspace-wide `--all-features`, which would also switch on Anchor's
+      # `idl-build` and break the program crates.
+      #
+      # The six live tests in `rpc_source_live.rs` skip here: they need
+      # HELIX_RPC_URL pointing at a validator, and CI has none. They are run
+      # against `solana-test-validator` locally — see docs/TESTING.md. Skipping
+      # is reported by the test itself rather than by an `#[ignore]`, so the
+      # reason is in the output rather than in a flag someone has to know about.
+      - name: Read API transport and RPC source
+        run: cargo test -p helix-indexer --features server,rpc
 
       # `anchor test` is deliberately not run. The runtime suite is Rust against
       # LiteSVM, executed by the step above; there is no TypeScript suite, and
