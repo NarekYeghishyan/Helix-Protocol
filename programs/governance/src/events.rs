@@ -19,6 +19,12 @@ pub struct RealmInitialized {
     pub approval_bps: u16,
     pub voting_period: i64,
     pub timelock_delay: i64,
+    /// Carried for the same reason every other parameter is: a consumer that
+    /// reconstructs the realm from events must arrive at the account, and this
+    /// field is otherwise unlearnable until the first `RealmParamsUpdated`. An
+    /// event that omits one field of the state it announces makes the whole
+    /// reconstruction conditional on an update that may never happen.
+    pub min_weight_to_propose: u64,
     pub timestamp: i64,
 }
 

@@ -36,7 +36,7 @@
 //! [`crate::projection`]: a later event referring to an entity that was never
 //! created is the symptom, and it is reported.
 
-use crate::logs::{parse, Anomaly};
+use crate::logs::{parse, Anomaly, EmittedEvent};
 use crate::projection::Analytics;
 use crate::source::{Cursor, LogSource, TransactionLogs};
 
@@ -47,22 +47,62 @@ struct Pending {
     slot: u64,
 }
 
+/// A transaction the cluster will not take back, with what it emitted.
+///
+/// Carried out of a poll rather than merely counted, because it is exactly what a
+/// durable store may write. Anything still pending may be rolled back, and a
+/// database row that a fork can revoke is a number that was never true — so the
+/// events cross this boundary at the moment they finalise and not before.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SettledTransaction {
+    pub signature: String,
+    pub slot: u64,
+    pub events: Vec<EmittedEvent>,
+    /// What was wrong with this transaction's log, if anything.
+    ///
+    /// Also reported live in [`PollOutcome::anomalies`], and the duplication is
+    /// deliberate: an operator needs to know about a truncated log the moment it
+    /// is seen, and a store must only record one for a transaction that actually
+    /// happened. Those are different moments, and a rollback between them is the
+    /// case that makes them different.
+    pub anomalies: Vec<Anomaly>,
+}
+
+/// A log-level problem, and the transaction it was seen in.
+///
+/// [`Anomaly`] on its own names a line number in a log the reader has no way to
+/// find again — `Truncated { log_index: 12 }` is a statistic, not something
+/// anyone can act on. The signature is what makes it a report, and it is what the
+/// `ingestion_anomalies` table has had in its primary key since it was written,
+/// during the whole period the code could not supply it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReportedAnomaly {
+    pub signature: String,
+    pub anomaly: Anomaly,
+}
+
 /// What one [`Ingestor::poll`] did.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct PollOutcome {
     /// Transactions applied to `head` that had not been applied before.
     pub applied: usize,
     /// How many buffered transactions a rollback invalidated, if any.
     pub reverted: Option<usize>,
-    /// Transactions promoted from pending to finalised this poll.
-    pub finalized: usize,
+    /// Transactions promoted from pending to finalised this poll, in ledger
+    /// order. The cursor after the poll points at the last of them.
+    pub settled: Vec<SettledTransaction>,
     /// Log-level problems seen, e.g. truncation. Never silently dropped.
-    pub anomalies: Vec<Anomaly>,
+    pub anomalies: Vec<ReportedAnomaly>,
 }
 
 impl PollOutcome {
     pub fn was_reorg(&self) -> bool {
         self.reverted.is_some()
+    }
+
+    /// How many transactions this poll finalised.
+    pub fn finalized(&self) -> usize {
+        self.settled.len()
     }
 }
 
@@ -111,17 +151,37 @@ impl Ingestor {
         }
     }
 
-    /// Resumes from a persisted cursor.
+    /// Resumes ingestion from a persisted cursor, with an empty projection.
     ///
-    /// The projection starts empty, so this is a resume for *ingestion* and not
-    /// for state — a real deployment pairs it with a loaded projection. What it
-    /// establishes is that the source is asked to continue rather than to replay
-    /// the chain from genesis, and that anything below the cursor is treated as
-    /// settled.
+    /// This is a resume for *ingestion* and not for state: the source is asked to
+    /// continue rather than to replay the chain from genesis, and anything below
+    /// the cursor is treated as settled — but nothing below it is *known*. Use
+    /// [`Self::restore`] when the projection has been loaded too.
     pub fn resume_at(cursor: Cursor) -> Self {
         Self {
             cursor,
             ..Self::new()
+        }
+    }
+
+    /// Resumes from a persisted cursor **and** the state that cursor describes.
+    ///
+    /// The two must come from the same read, or the indexer resumes at a slot
+    /// whose events are not all in the projection and silently never fetches
+    /// them again. That is why [`crate::store::Store::load`] returns both from
+    /// one snapshot rather than offering them separately.
+    ///
+    /// `head` starts as a copy of `finalized`: everything above the cursor is
+    /// unfinalised, so it is re-read from the source rather than persisted. That
+    /// is a few seconds of chain, and it is the reason no stored row is ever
+    /// subject to a rollback.
+    pub fn restore(cursor: Cursor, finalized: Analytics) -> Self {
+        Self {
+            head: finalized.clone(),
+            finalized,
+            pending: Vec::new(),
+            cursor,
+            replay: Vec::new(),
         }
     }
 
@@ -199,7 +259,16 @@ impl Ingestor {
     /// Folds one transaction into `head` and records it as pending.
     fn apply(&mut self, tx: &TransactionLogs, outcome: &mut PollOutcome) {
         let parsed = parse(&tx.logs);
-        outcome.anomalies.extend(parsed.anomalies.iter().cloned());
+        outcome.anomalies.extend(
+            parsed
+                .anomalies
+                .iter()
+                .cloned()
+                .map(|anomaly| ReportedAnomaly {
+                    signature: tx.signature.clone(),
+                    anomaly,
+                }),
+        );
 
         let new = self.head.apply_transaction(&tx.signature, &parsed.events);
         if new > 0 {
@@ -234,12 +303,17 @@ impl Ingestor {
                 .apply_transaction(&tx.signature, &parsed.events);
             self.cursor = Cursor {
                 slot: tx.slot,
-                signature: Some(tx.signature),
+                signature: Some(tx.signature.clone()),
             };
+            outcome.settled.push(SettledTransaction {
+                signature: tx.signature,
+                slot: tx.slot,
+                events: parsed.events,
+                anomalies: parsed.anomalies,
+            });
         }
 
         self.pending.drain(..settling.min(self.pending.len()));
-        outcome.finalized = settling;
     }
 }
 
@@ -315,7 +389,7 @@ mod tests {
         let outcome = ingestor.poll(&mut f.source, 100).expect("poll");
 
         assert_eq!(outcome.applied, 3);
-        assert_eq!(outcome.finalized, 3);
+        assert_eq!(outcome.finalized(), 3);
         assert!(!outcome.was_reorg());
         assert_eq!(f.staked(&ingestor), 300);
         assert_eq!(f.finalized_staked(&ingestor), 300);
@@ -347,7 +421,7 @@ mod tests {
         let outcome = ingestor.poll(&mut f.source, 100).expect("poll");
 
         assert_eq!(outcome.applied, 3);
-        assert_eq!(outcome.finalized, 1, "only slot 1 is final");
+        assert_eq!(outcome.finalized(), 1, "only slot 1 is final");
         assert_eq!(f.staked(&ingestor), 300, "head sees all three");
         assert_eq!(
             f.finalized_staked(&ingestor),
@@ -500,9 +574,19 @@ mod tests {
             outcome
                 .anomalies
                 .iter()
-                .any(|a| matches!(a, Anomaly::Truncated { .. })),
+                .any(|a| matches!(a.anomaly, Anomaly::Truncated { .. })),
             "truncation did not reach the caller: {:?}",
             outcome.anomalies
         );
+
+        // Without the signature there is nothing to re-fetch, which is the only
+        // thing anyone can actually do about a truncated log.
+        assert_eq!(outcome.anomalies[0].signature, "sig-truncated");
+
+        // And it must reach the settled record too, or a store writing only what
+        // finalised would record the events while losing the fact that they are
+        // known to be incomplete.
+        assert_eq!(outcome.settled.len(), 1);
+        assert!(!outcome.settled[0].anomalies.is_empty());
     }
 }

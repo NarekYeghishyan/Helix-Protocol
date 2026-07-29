@@ -21,8 +21,8 @@ says how much to trust each one.
 | 1 | Four programs, unit-tested | ✅ Done |
 | 2 | Integration tests against a validator | ✅ Done — 74 runtime tests; found and fixed F-8 |
 | 3 | Devnet deployment + verifiable builds | ◐ Bootstrap measured, planned, *verifiable after the fact*, and now submitted to a real cluster; F-9 fixed; the devnet deploy itself is blocked on funding |
-| 4 | Indexer + analytics API | ◐ Decode, ingestion, the RPC source and the read API built and tested against a live cluster; the storage binding is the remainder — **highest priority** |
-| 5 | Dashboard + wallet integration | ◐ Analytics views, wallet connection and cluster switching built; transaction flows need a deployment |
+| 4 | Indexer + analytics API | ✅ Done — decode, ingestion, the RPC source, the read API and the Postgres binding, each tested against the real thing |
+| 5 | Dashboard + wallet integration | ◐ Analytics views, wallet connection and cluster switching built; the write flows are the next phase |
 | 6 | Fuzzing + external audit prep | ✅ Done — compute benchmarked, fuzzing found F-10, audit scoped in [AUDIT-READINESS.md](./AUDIT-READINESS.md) |
 | 7 | Governance migration (burn the admin keys) | ◐ 7.1 and 7.2 reachable and tested — F-11 fixed; 7.3 needs a deployment |
 
@@ -34,7 +34,7 @@ The ordering follows one rule: **retire the largest unknown next**, not the most
 visible feature.
 
 That unknown used to be the cross-program wiring, which had only been proven to
-*compile*. It is now executed end to end by 95 runtime tests and driven in random order by
+*compile*. It is now executed end to end by 98 runtime tests and driven in random order by
 a fuzzer, and along the way it produced F-8, F-9, F-10 and F-11 — so the rule paid for
 itself and that particular unknown is retired.
 
@@ -46,18 +46,25 @@ deployed to one, the bootstrap has been submitted to one, and the projection is 
 against accounts read back over JSON-RPC. What a local validator still cannot do is fork,
 which is why reorg handling stays on a scripted source.
 
-**The largest unknown now is persistence.** Everything the indexer knows is in memory, so
-a restart re-reads the chain from genesis — which works today because the ledger is small
-and stops working at exactly the point it matters. The schema is written and reviewed;
-nothing executes it, and an untested `ON CONFLICT` clause is a claim rather than a
-guarantee.
+Persistence was the next one, and it is retired too. It also produced the phase's most
+uncomfortable finding, which had nothing to do with databases: the indexer could not decode
+`RealmParamsUpdated` or `RealmAuthorityChanged` — the two events that record governance
+becoming self-governing, added to the program in Phase 7.1 and never added to the decoder.
+On a live chain both would have arrived as "I do not recognise this". `event.rs` argues that
+using the programs' own structs makes a changed field a compile error, and that is true; it
+says nothing about a *new type*, because nothing in Rust enumerates the types in a module.
+That hole is closed by checking the list against the IDLs `anchor build` generates, which
+cannot drift from the programs the way a hand-written list can.
 
-A dashboard is what a stakeholder can see, so there is real pressure to finish it early.
-It is still the wrong call, for a reason that has simply moved: its write flows need a
-deployment, and its read flows now have a source that cannot survive a restart. A demo
-over unproven programs creates confidence the system does not deserve; a demo over numbers
-that vanish on restart creates confidence in a pipeline that has not been asked to keep
-anything.
+**The largest unknown now is the write path from a browser.** Every flow that spends,
+stakes or votes has been driven from Rust and never from a wallet, and the failure modes
+there — a simulation that disagrees with the signed transaction, an Anchor error code
+rendered as `0x1771`, a stale blockhash — are not reachable from the test suite. Phase 5.2
+and 5.3 are now unblocked: they were waiting on a deployment, and a local validator is one.
+
+A dashboard is also what a stakeholder can see, so finishing it now happens to be both the
+visible choice and the correct one, which has not been true at any earlier point in this
+roadmap.
 
 ---
 
@@ -188,8 +195,8 @@ nothing yet talks to a cluster or a database.
 |---|---|---|---|
 | 4.0 | Event decoding and log attribution, reconciled against the chain | 1.5d | ✅ Done |
 | 4.1 | Event subscriber over RPC logs, with reorg handling | 1.5d | ✅ Done — [`rpc.rs`](../indexer/src/rpc.rs) + `helix-index`, verified against a validator |
-| 4.2 | Postgres schema + idempotent upserts keyed on `(signature, log_index)` | 1d | ◐ Schema written, binding not — **now the priority** |
-| 4.3 | Backfill from genesis slot, resumable | 1d | ◐ Paging and cursor resumption tested against a live cluster; the descent below `max_scan` is refused rather than served |
+| 4.2 | Postgres schema + idempotent upserts keyed on `(signature, log_index)` | 1d | ✅ Done — [`store.rs`](../indexer/src/store.rs), 9 tests against a real database |
+| 4.3 | Backfill from genesis slot, resumable | 1d | ◐ Paging and cursor resumption tested against a live cluster and durable across a restart; the second, downward cursor the schema allows is unwritten |
 | 4.4 | Read API: TVL, APR, staker distribution, proposal history, treasury flows | 1d | ✅ Done — [`api.rs`](../indexer/src/api.rs) + an axum transport behind the `server` feature |
 
 **4.0 is deliberately the half that can be verified without a cluster.** Ingestion cannot
@@ -262,7 +269,37 @@ the axum wiring is behind a `server` feature so `cargo test --workspace` does no
 an async runtime to test functions with no I/O. Routing that contains logic is routing
 nobody tests.
 
-Medium confidence on the remainder because it depends on RPC provider behaviour (log
+**4.2 is where the schema stopped being a design and started being code.** Three things in
+it did not survive execution, and all three are the same kind of error — a column that
+reads well and can never be written:
+
+- `payload JSONB` became `BYTEA`. The table's stated purpose is that everything else is
+  derivable from it, and derivable means decodable by `HelixEvent::decode`. JSON would have
+  needed a hand-written encoder per event type — a second declaration of the event schema,
+  in the one crate whose entire justification is not having one.
+- `events.orphaned_at` is gone. It marked rows whose slot was rolled back, and nothing can
+  write it: only finalised transactions are stored, and finalised history does not change.
+  Same defect as invariant §5.8 before it was corrected — a claim that cannot fail.
+- `ingestion_anomalies.signature` finally has a writer. It had been in the primary key from
+  the start while `Anomaly` carried only a log-line index, so the code could not supply it.
+  "Line 12 was truncated" with no transaction to re-fetch is a statistic, not a report.
+
+The property that took the most thought is the one that is not about SQL at all. The
+persisted rows carry the *result* of folding an event and not the fact that it was folded —
+and for `Staked`, `Unstaked`, `RewardsClaimed` and `StreamClaimed` that fact is the only
+thing making replay safe, because those four publish a delta and no running total to
+assign. A projection restored without its applied set double-counts the first redelivery
+after a restart, silently, and only for the transactions straddling it. `load` restores
+that set for every event at or above the cursor's slot, which is provably the whole range a
+source can serve again.
+
+**And the phase found a decoding gap that had nothing to do with storage.** The indexer did
+not know `RealmParamsUpdated` or `RealmAuthorityChanged`, added to governance in 7.1 — the
+two events recording that governance now answers only to itself. Both would have arrived as
+`Anomaly::UndecodableData`. `event_coverage.rs` now compares the decoder's list against the
+IDLs, so the class cannot recur.
+
+Medium confidence on 4.3's remainder because it depends on RPC provider behaviour (log
 retention, webhook reliability) that is hard to predict from outside.
 
 ## Phase 5 — Dashboard
@@ -272,13 +309,14 @@ retention, webhook reliability) that is hard to predict from outside.
 | Milestone | Deliverable | Est. | Status |
 |---|---|---|---|
 | 5.1 | Next.js app, wallet-adapter, cluster switching | 1d | ✅ Done |
-| 5.2 | Stake / unstake / claim flows with simulation before signing | 2d | ⬜ Needs a deployment |
-| 5.3 | Governance UI: proposal list, vote, lifecycle state, timelock countdown | 2d | ◐ Proposal list built; voting needs a deployment |
+| 5.2 | Stake / unstake / claim flows with simulation before signing | 2d | ⬜ **Now the priority** — unblocked by the local validator |
+| 5.3 | Governance UI: proposal list, vote, lifecycle state, timelock countdown | 2d | ◐ Proposal list built; voting is next |
 | 5.4 | Analytics views over the Phase 4 API | 1–2d | ✅ Done |
 
-**5.1 and 5.4 are the half that does not need a chain.** [`app/`](../app) reads the Phase
-4 API, so it can be built and verified now; the write flows cannot, and pretending
-otherwise would produce buttons that have never been pressed.
+**5.1 and 5.4 are the half that does not need a chain**, and they were built first for that
+reason. The write flows were blocked on a deployment; they no longer are, because
+`solana-test-validator` is one. What is left is the part of the system that has never been
+driven from a wallet, which is now the largest unknown in the project.
 
 Two things the UI does that most dashboards do not, both inherited from decisions the API
 already made:
@@ -399,7 +437,7 @@ Named so that absence reads as a decision rather than an oversight:
 
 | Item | Impact | When |
 |---|---|---|
-| ~~No integration tests~~ | ~~Cross-program wiring unverified at runtime~~ | Done — Phase 2, 95 runtime tests |
+| ~~No integration tests~~ | ~~Cross-program wiring unverified at runtime~~ | Done — Phase 2, 98 runtime tests |
 | ~~`Position` accounts are never closed~~ | ~~Rent is not reclaimed on full exit~~ | Done — `close_position`, [F-7](./SECURITY-ASSESSMENT.md#f-7--position-accounts-never-closed) |
 | Token metadata not initialised | Mint has no on-chain name/symbol; needs the Token-2022 metadata extension CPI plus a realloc for variable-length fields | Phase 3 |
 | Single reward mint per pool | Multi-reward pools need a per-reward accumulator | Deferred; no demand |

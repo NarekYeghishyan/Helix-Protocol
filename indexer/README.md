@@ -7,18 +7,20 @@ history is reconstructable from transaction logs without polling account state.
 This crate does the reconstructing — decode, attribute, fold.
 
 ```bash
-cargo test -p helix-indexer                                        # 44 unit tests
-cargo test -p helix-indexer --all-features                          # incl. transport + RPC
+cargo test -p helix-indexer                                        # 50 unit tests
+cargo test -p helix-indexer --all-features                          # incl. transport, RPC, store
 cargo test -p helix-integration-tests --test indexer_reconciliation # 8 against the chain
 HELIX_RPC_URL=http://127.0.0.1:8899 \
   cargo test -p helix-integration-tests --test rpc_source_live -- --test-threads=1  # 6 live
+HELIX_DATABASE_URL=postgres://helix:helix@127.0.0.1:55432/helix \
+  cargo test -p helix-integration-tests --test store_postgres                       # 10 live
 ```
 
 ## What it is not
 
-There is no database driver, and **no network I/O in anything compiled by
-default**. Talking to a cluster is one module, [`rpc.rs`](./src/rpc.rs), behind a
-feature that is off.
+**Nothing compiled by default does I/O.** Two modules do: [`rpc.rs`](./src/rpc.rs)
+reads a cluster and [`store.rs`](./src/store.rs) writes to Postgres, and both are
+behind features that are off.
 
 That is deliberate, not unfinished. Ingestion is the part that cannot be tested
 without a cluster. Decoding and folding are the parts where the bugs that corrupt
@@ -36,8 +38,8 @@ holding the unfinalised tail, noticing it has been replaced, rebuilding, promoti
 final, advancing the cursor — is [`ingest.rs`](./src/ingest.rs) and is tested against a
 scripted source that rolls slots back on demand, because a cluster cannot be asked to
 fork. *Talking to an RPC node* is [`rpc.rs`](./src/rpc.rs), tested against a validator
-with the four programs deployed. What remains is the Postgres binding —
-[Phase 4.2](../docs/ROADMAP.md#phase-4--indexer-and-analytics-api).
+with the four programs deployed. *Keeping* what finalised is [`store.rs`](./src/store.rs),
+tested against a real Postgres.
 
 ## The RPC source
 
@@ -47,9 +49,9 @@ cargo run -p helix-indexer --features rpc --bin helix-index -- \
 ```
 
 ```text
-following http://127.0.0.1:8899 — Ctrl-C to stop
-+3 applied, 0 finalized | cursor slot 0 | 3 unfinalized | 1 pools, 2 positions,
-0 proposals, 1 treasuries | 0 orphaned
+following http://127.0.0.1:8899 (in memory only, not persisted) — Ctrl-C to stop
++3 applied, 0 finalized, 0 rows stored | cursor slot 0 | 3 unfinalized |
+1 pools, 2 positions, 0 proposals, 1 treasuries, 1 realms | 0 orphaned
 ```
 
 It speaks JSON-RPC directly rather than through `solana-rpc-client`, which is published at
@@ -72,6 +74,104 @@ All four are asserted in
 tests. Three of those assertions were vacuous when first written and were only found by
 mutation testing — see
 [TESTING.md](../docs/TESTING.md#the-live-tests-and-the-three-that-were-not-testing-their-claims).
+
+## Persistence
+
+```bash
+docker run -d --name helix-postgres -e POSTGRES_PASSWORD=helix -e POSTGRES_USER=helix \
+  -e POSTGRES_DB=helix -p 55432:5432 postgres:16-alpine
+
+cargo run -p helix-indexer --features rpc,postgres --bin helix-index -- \
+  --url http://127.0.0.1:8899 \
+  --database-url postgres://helix:helix@127.0.0.1:55432/helix
+```
+
+```text
+database is empty — ingesting from the start of available history
+following http://127.0.0.1:8899 (persisting to Postgres) — Ctrl-C to stop
++16 applied, 24 finalized, 26 rows stored | cursor slot 518 | 0 unfinalized |
+5 pools, 5 positions, 0 proposals, 5 treasuries, 5 realms | 0 orphaned
+
+$ # ...and again, as a restarted process
+resuming at slot 518 | 5 pools, 5 positions, 0 proposals, 5 treasuries, 5 realms restored
+following http://127.0.0.1:8899 (persisting to Postgres) — Ctrl-C to stop
++0 applied, 0 finalized, 0 rows stored | cursor slot 518 | 0 unfinalized | ...
+```
+
+24 transactions finalised but only 16 carried anything: `getSignaturesForAddress` on a
+program id also returns the transactions that *deployed* it, and those emit no events.
+
+### The rehearsal that reported an indexer newer than its chain
+
+The first attempt at the run above, against a validator still holding the previous build,
+printed this five times and reported zero realms:
+
+```text
+anomaly: 31PhgSLZ...xpLXZ UndecodableData { log_index: 23, program: Governance }
+```
+
+`RealmInitialized` had just gained `min_weight_to_propose`, so the deployed program was
+emitting the old, shorter body and Borsh refused it — correctly, because the alternative
+is decoding a prefix and inventing the rest. It is the mirror of the case
+[`event.rs`](./src/event.rs) documents: usually an anomaly means the indexer is *older*
+than the chain, and here it meant the opposite.
+
+Both directions land in the same place, which is the point. The one outcome that never
+happens is a plausible number with a missing field silently defaulted — and the run says
+so with a signature attached, so the transaction can be looked up rather than guessed at.
+After redeploying, the anomalies are gone and the realms appear.
+
+Four properties, in the order they matter. Each fails silently rather than loudly,
+which is why each has a test that injures it deliberately.
+
+| Property | Why the alternative is worse than an error |
+|---|---|
+| **The cursor never gets ahead of the rows** | A crash between writing slot 900's rows and its cursor, in the other order, resumes at 901 and never asks for 900 again. Nothing reports it; the figures are just permanently a little too small. Every write and the cursor share one database transaction |
+| **Only finalised state is written** | A row a fork can revoke is a number that was never true. The unfinalised tail is re-read from the source instead — seconds of chain, and it makes every stored row unconditionally correct |
+| **Replay changes nothing** | Redelivery is routine. Inserts are `ON CONFLICT DO NOTHING`; upserts assign rather than accumulate and are guarded on `updated_at_slot`, so a backfill replaying slot 200 cannot overwrite a live write at slot 500 |
+| **A loaded projection is the one that was saved** | Including the part that is not a number — see below |
+
+**That last one is the interesting one.** The persisted rows carry the *result* of
+folding an event. They do not carry the fact that it was folded, and that fact is
+load-bearing: most of the projection assigns running totals the events supply,
+which is what makes replay safe, but `Staked`, `Unstaked`, `RewardsClaimed` and
+`StreamClaimed` publish a delta and no cumulative figure, so those four genuinely
+accumulate. For them, idempotency *is* the applied set — and the applied set lives
+in the process that is restarting.
+
+So `load` restores it, for every event at or above the cursor's slot. That bound is
+exact rather than cautious: below the cursor the ingestor refuses the transaction
+outright as `FinalizedHistoryChanged`, so those events can never be re-folded; at
+the cursor's own slot they can, because the cursor resumes mid-slot by signature
+and an RPC node that has pruned that signature from its address index serves the
+whole slot again. One slot deep, not the whole of history.
+
+Without it the first redelivery after a restart double-counts, silently, only for
+the transactions straddling the restart.
+
+### What the binding changed about the schema
+
+`sql/schema.sql` had been written and reviewed a phase earlier. Executing it moved
+three things:
+
+- **`payload` is `BYTEA`, not `JSONB`.** The table's stated purpose is that
+  everything else is derivable from it, and derivable means decodable by
+  `HelixEvent::decode` — the same function the live log goes through. Producing
+  JSON would have meant a hand-written encoder per event type, which is a second
+  declaration of the event schema in a crate whose whole justification is not
+  having one. The queryable facets are columns instead.
+- **`events.orphaned_at` is gone.** It marked rows whose slot was rolled back, and
+  it could never have been written: only finalised transactions are stored, and
+  finalised history does not change. A column nothing can write is a claim about
+  behaviour the system does not have — the same defect as an invariant that cannot
+  fail. Orphans are a `kind` in `ingestion_anomalies`, which is what they are.
+- **`ingestion_anomalies.signature` finally has a writer.** It had been in the
+  primary key from the start; the code could not supply it, because `Anomaly`
+  carries a log-line index and nothing else. "Line 12 was truncated" with no
+  transaction to re-fetch is a statistic, not a report.
+
+`schema.sql` is `include_str!`d by `Store::migrate`, so the file that documents the
+schema is the file that creates it.
 
 ## Why Rust, and why it links the programs
 
@@ -188,8 +288,10 @@ off chain. That is a second implementation of the weight table: correct today,
 silently wrong the day the table changes. The event now carries `weighted_amount`.
 
 The general rule it produced: **an event that cannot be folded into state without
-recomputation is an incomplete event.** Applied across all 36, this is the only
-one that failed it.
+recomputation is an incomplete event.** Applied across all 38, one other failed it:
+`RealmInitialized` announced a realm without `min_weight_to_propose`, so the field
+was unlearnable until the first `RealmParamsUpdated` — an update that may never
+happen. It carries the field now.
 
 A second, found by a test bug rather than by design: `treasury_balance` returned 0
 for a treasury whose deposits predated the indexer, with nothing marking the
@@ -201,7 +303,7 @@ are now recorded in `orphaned`.
 
 | Module | Responsibility |
 |---|---|
-| [`event.rs`](./src/event.rs) | The 36 event types, and decoding one from its wire form |
+| [`event.rs`](./src/event.rs) | The 38 event types, and decoding one from its wire form |
 | [`logs.rs`](./src/logs.rs) | Attributing `Program data:` lines to the invocation that emitted them |
 | [`projection.rs`](./src/projection.rs) | Folding events into queryable state, exactly once each |
 | [`source.rs`](./src/source.rs) | The `LogSource` trait, and a scripted source that can roll a slot back on demand |
@@ -209,7 +311,8 @@ are now recorded in `orphaned`.
 | [`rpc.rs`](./src/rpc.rs) | The one module that opens a socket, behind the `rpc` feature |
 | [`api.rs`](./src/api.rs) | The read model — pure functions from a projection to serialisable views |
 | [`server.rs`](./src/server.rs) | HTTP transport, behind the `server` feature |
-| [`sql/schema.sql`](./sql/schema.sql) | Postgres DDL for the persistent form — **written, not yet exercised** |
+| [`store.rs`](./src/store.rs) | Persisting what finalised, behind the `postgres` feature |
+| [`sql/schema.sql`](./sql/schema.sql) | The DDL `Store::migrate` executes, by `include_str!` |
 
 ## The read API
 
@@ -225,10 +328,9 @@ GET /realms/{address}/proposals
 GET /treasuries/{address}
 ```
 
-It serves whatever projection it is given, and holds nothing across a restart — there is
-no storage binding yet (Phase 4.2), so a fresh process starts from an empty projection
-until something has polled a cluster into it. That is stated on startup rather than
-hidden, because a demo that looks live and is not is worse than one that says so.
+It serves whatever projection it is given. `helix-index --database-url` is what puts
+something in one across a restart; without it a fresh process starts empty and says so on
+startup, because a demo that looks live and is not is worse than one that admits it.
 
 Three decisions shape every response, each because the obvious alternative is quietly
 wrong.

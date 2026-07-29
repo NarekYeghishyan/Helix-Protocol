@@ -5,22 +5,24 @@
 //! account state. This crate is the part that does the reconstructing: decode,
 //! attribute, fold.
 //!
-//! **Everything compiled by default is pure.** Network I/O exists in exactly one
-//! module, [`rpc`], behind a feature that is off — so the default build has no
-//! socket in it, and the parts where analytics bugs actually live are testable
-//! without a cluster. That is the separation the whole crate is arranged around:
-//! ingestion is what cannot be verified offline, so it is made as small as it
+//! **Everything compiled by default is pure.** I/O exists in two modules — [`rpc`]
+//! reads the chain, `store` writes to Postgres — and both are behind features that
+//! are off, so the default build has neither a socket nor a database driver in it,
+//! and the parts where analytics bugs actually live are testable without either.
+//! That is the separation the whole crate is arranged around: ingestion and
+//! persistence are what cannot be verified offline, so each is made as small as it
 //! can be and pushed to one edge rather than threaded through the fold.
 //!
 //! # Layers
 //!
 //! | Module | Responsibility |
 //! |---|---|
-//! | [`event`] | The 36 event types, and decoding one from its wire form |
+//! | [`event`] | The 38 event types, and decoding one from its wire form |
 //! | [`logs`] | Attributing `Program data:` lines to the invocation that emitted them |
 //! | [`projection`] | Folding events into queryable state, exactly once each |
 //! | [`ingest`] | Driving a source into two projections, safely across reorgs |
 //! | `rpc` | The one module that opens a socket, behind the `rpc` feature |
+//! | `store` | Persisting what finalised, behind the `postgres` feature |
 //!
 //! # How it is verified
 //!
@@ -53,12 +55,16 @@ pub mod rpc;
 #[cfg(feature = "server")]
 pub mod server;
 pub mod source;
+#[cfg(feature = "postgres")]
+pub mod store;
 
 pub use api::{Api, Finality};
 pub use event::{HelixEvent, Program};
-pub use ingest::{IngestError, Ingestor, PollOutcome};
+pub use ingest::{IngestError, Ingestor, PollOutcome, SettledTransaction};
 pub use logs::{parse, Anomaly, EmittedEvent, ParsedLogs};
 pub use projection::{Analytics, EventId};
 #[cfg(feature = "rpc")]
 pub use rpc::{Commitment, RpcError, RpcLogSource};
 pub use source::{Cursor, LogSource, TransactionLogs};
+#[cfg(feature = "postgres")]
+pub use store::{Restored, Store, StoreError};

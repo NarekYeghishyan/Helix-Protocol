@@ -44,6 +44,13 @@ ureq = { version = "3", features = ["json"], optional = true }
 axum = { version = "0.8", optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"], optional = true }
 
+# The storage binding. `postgres` is the blocking wrapper over `tokio-postgres`,
+# chosen over `sqlx` because sqlx's compile-time query checking wants a live
+# database (or a checked-in offline cache) at *build* time — which makes a
+# database a build dependency of a crate whose default build has no I/O at all.
+# Blocking, to match `LogSource`.
+postgres = { version = "0.19", optional = true }
+
 [features]
 default = []
 server = ["dep:axum", "dep:tokio"]
@@ -52,6 +59,11 @@ server = ["dep:axum", "dep:tokio"]
 # reason `server` is: `cargo test --workspace` should not build a TLS stack to
 # test a fold. CI lints with `--all-features`.
 rpc = ["dep:ureq"]
+
+# Persistence. Off by default, so the pure fold is still testable without a
+# database driver in the graph — and so `cargo test --workspace` stays the thing
+# anyone can run on a clean checkout.
+postgres = ["dep:postgres"]
 
 # Cargo builds every `src/bin/*.rs` by default, so without this the binary is
 # compiled even when the feature that supplies its dependencies is off.

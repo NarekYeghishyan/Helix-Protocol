@@ -17,11 +17,11 @@ the count.
 
 | Program | Lines | Instructions | Holds authority over |
 |---|---:|---:|---|
-| [`token-manager`](../programs/token-manager) | 1,068 | 10 | The HLX mint authority |
-| [`staking`](../programs/staking) | 1,814 | 9 | Stake and reward vaults |
-| [`governance`](../programs/governance) | 2,537 | 23 | Nothing transferable |
+| [`token-manager`](../programs/token-manager) | 1,096 | 10 | The HLX mint authority |
+| [`staking`](../programs/staking) | 2,011 | 9 | Stake and reward vaults |
+| [`governance`](../programs/governance) | 2,759 | 23 | Nothing transferable |
 | [`treasury`](../programs/treasury) | 1,319 | 8 | Protocol funds and vesting streams |
-| **Total** | **6,738** | **50** | |
+| **Total** | **7,185** | **50** | |
 
 Anchor 1.1.2, Solana 3.1.10, Token-2022. Line counts include unit tests and doc comments,
 which are a large share — the programs themselves are smaller than the figure suggests.
@@ -39,12 +39,12 @@ liquid staking derivatives. Reasons in [ROADMAP.md](./ROADMAP.md#explicitly-out-
 
 | | |
 |---|---|
-| Tests | 222 — 121 unit, 95 runtime against the real BPF programs, 6 live against a validator |
+| Tests | 241 — 127 unit, 98 runtime against the real BPF programs, 16 live against a validator and a Postgres instance |
 | Invariants | 58 documented, all verified — [INVARIANTS.md](./INVARIANTS.md) |
 | Fuzzing | Stateful, invariants as the oracle, 22 sequences × 150 operations per run |
 | Compute | Every instruction measured; worst is 17.9% of the default budget |
 | Lints | `clippy -D warnings`, `fmt --check`, `cargo audit`, all clean in CI |
-| Deployed | **Not to a public cluster.** All four deploy under the upgradeable loader to a local validator, where the bootstrap transaction and the indexer are exercised against a real RPC. Devnet is blocked on faucet funding, and the upgrade authority is therefore still a local key — [F-5](./SECURITY-ASSESSMENT.md) |
+| Deployed | **Not to a public cluster.** All four deploy under the upgradeable loader to a local validator, where the bootstrap transaction and the indexer are exercised against a real RPC and a real database. Devnet is blocked on faucet funding, and the upgrade authority is therefore still a local key — [F-5](./SECURITY-ASSESSMENT.md) |
 
 ## 3. Where the findings came from
 
@@ -115,11 +115,13 @@ elsewhere. They are listed so they can be *spot-checked* rather than reproduced.
 | The bootstrap fits one transaction | Measured: 748 bytes, 17 accounts, against the 1232-byte cap |
 | The aggregate solvency invariants hold under arbitrary operation order | Fuzz oracle, checked after every operation, over a fee-bearing mint too |
 | The event log reconstructs on-chain state | [`indexer_reconciliation.rs`](../tests/integration/tests/indexer_reconciliation.rs) compares the projection to the accounts field by field |
+| The indexer can decode every event the programs emit | [`event_coverage.rs`](../tests/integration/tests/event_coverage.rs) checks the decoder's list against the generated IDLs — added because two governance events had been missing from it since Phase 7.1 |
+| A restart does not change the numbers | [`store_postgres.rs`](../tests/integration/tests/store_postgres.rs) saves, reloads and compares every projection map, against a real database |
 | Only the governance executor can move treasury funds | Runtime negative test per threat-model attack |
 
-Mutation testing was used on the three claims where a passing test proves least — the
-transfer-fee accounting, the indexer's CPI attribution, and `close_position` leaving
-`pool.position_count` alone. In each case the injected bug turns the targeted tests red
+Mutation testing was used on the claims where a passing test proves least — the
+transfer-fee accounting, the indexer's CPI attribution, `close_position` leaving
+`pool.position_count` alone, the six RPC hazards, and the seven storage ones. In each case the injected bug turns the targeted tests red
 while the tests that *cannot* distinguish the mutation stay green, which is the property
 that makes the suite meaningful rather than merely large.
 
@@ -156,10 +158,17 @@ them apart.
 
 ## 6. Limits of everything above
 
-**Nothing has run on a cluster.** LiteSVM executes the real BPF programs faithfully, but
-it is not a validator. Transaction fees, congestion, priority-fee dynamics and reorg
-behaviour are entirely unexercised. Anything about how this system behaves under load is
-currently unevidenced.
+**Nothing has run on a *public* cluster.** A local validator retires the transport
+questions — the programs deploy under the upgradeable loader, the bootstrap goes through a
+mempool, and the indexer reads them back over JSON-RPC into a database. What it does not
+retire is anything about a shared network: transaction fees, congestion, priority-fee
+dynamics and reorg behaviour are all still unexercised, and reorg handling in particular is
+tested against a scripted source because no local validator can be asked to fork. Anything
+about how this system behaves under load remains unevidenced.
+
+**No part of the system has been driven from a browser.** Every flow that stakes, spends or
+votes has been exercised from Rust. Wallet signing, transaction simulation and error
+decoding are the next phase and are currently claims.
 
 **The fuzzer explores what its generator can reach.** It is stateful and its coverage is
 asserted rather than assumed, but the operation mix is hand-designed, and it took three

@@ -8,6 +8,19 @@
 //! field added to `Staked` shows up in the indexer without anyone editing the
 //! indexer, and a field *removed* is a compile error rather than a column that
 //! quietly stops being populated.
+//!
+//! **That protects fields, not the list itself.** Nothing in Rust enumerates the
+//! types in a module, so a program gaining a whole new event compiles fine here
+//! and simply never decodes — it arrives as [`crate::logs::Anomaly::UndecodableData`],
+//! which is at least reported, but reported as "the indexer is older than the
+//! chain" rather than fixed. That is not hypothetical: `RealmParamsUpdated` and
+//! `RealmAuthorityChanged` were added to governance in Phase 7.1 and were missing
+//! from the list below until Phase 4.2 — the two events that record governance
+//! becoming self-governing, which is the point of the entire protocol.
+//!
+//! The gap is closed by [`HelixEvent::NAMES`] and `event_coverage.rs`, which
+//! compares this list against the IDLs `anchor build` emits. The IDL is generated
+//! from the programs, so it cannot drift from them the way this list can.
 
 use anchor_lang::prelude::Pubkey;
 use anchor_lang::{AnchorDeserialize, Discriminator};
@@ -99,6 +112,28 @@ macro_rules! helix_events {
             pub fn name(&self) -> &'static str {
                 match self { $( $( Self::$variant(_) => stringify!($variant), )* )* }
             }
+
+            /// The on-chain time in the event body.
+            ///
+            /// Every event carries one, and it is deliberately not the time the
+            /// indexer saw the log: the two differ by however long the indexer
+            /// was down, and only one of them is history. That the field is
+            /// reachable uniformly here rather than through 38 match arms is
+            /// enforced by the compiler — a program adding an event without a
+            /// `timestamp` fails to build this.
+            pub fn timestamp(&self) -> i64 {
+                match self { $( $( Self::$variant(e) => e.timestamp, )* )* }
+            }
+
+            /// Every variant name this build knows, in declaration order.
+            ///
+            /// Exists so a test can compare it against the programs' IDLs. The
+            /// list above is hand-maintained, and a *removed* field is a compile
+            /// error while a *new event type* is not — which is exactly how
+            /// `RealmParamsUpdated` and `RealmAuthorityChanged` were emitted by
+            /// the chain for two phases without the indexer being able to decode
+            /// either. See `event_coverage.rs`.
+            pub const NAMES: &'static [&'static str] = &[ $( $( stringify!($variant), )* )* ];
         }
     };
 }
@@ -131,14 +166,16 @@ helix_events! {
     }
 
     Governance (helix_governance::ID) {
-        RealmInitialized:  helix_governance::events::RealmInitialized,
-        ProposalCreated:   helix_governance::events::ProposalCreated,
-        ProposalActivated: helix_governance::events::ProposalActivated,
-        VoteCast:          helix_governance::events::VoteCast,
-        ProposalFinalized: helix_governance::events::ProposalFinalized,
-        ProposalQueued:    helix_governance::events::ProposalQueued,
-        ProposalExecuted:  helix_governance::events::ProposalExecuted,
-        ProposalCancelled: helix_governance::events::ProposalCancelled,
+        RealmInitialized:      helix_governance::events::RealmInitialized,
+        RealmParamsUpdated:    helix_governance::events::RealmParamsUpdated,
+        RealmAuthorityChanged: helix_governance::events::RealmAuthorityChanged,
+        ProposalCreated:       helix_governance::events::ProposalCreated,
+        ProposalActivated:     helix_governance::events::ProposalActivated,
+        VoteCast:              helix_governance::events::VoteCast,
+        ProposalFinalized:     helix_governance::events::ProposalFinalized,
+        ProposalQueued:        helix_governance::events::ProposalQueued,
+        ProposalExecuted:      helix_governance::events::ProposalExecuted,
+        ProposalCancelled:     helix_governance::events::ProposalCancelled,
     }
 
     Treasury (helix_treasury::ID) {

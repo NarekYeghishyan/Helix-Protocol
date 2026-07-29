@@ -115,6 +115,7 @@ pub fn initialize_realm(ctx: Context<InitializeRealm>, params: RealmParams) -> R
         approval_bps: realm.approval_bps,
         voting_period: realm.voting_period,
         timelock_delay: realm.timelock_delay,
+        min_weight_to_propose: realm.min_weight_to_propose,
         timestamp: now,
     });
 

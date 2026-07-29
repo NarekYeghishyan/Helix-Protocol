@@ -10,7 +10,7 @@ is bounded by the honesty of its coverage claims.
 ```bash
 anchor build                                                  # required first — the
                                                               # runtime tests load .so files
-cargo test --workspace                                        # 222 tests: unit + doc + runtime
+cargo test --workspace                                        # 241 tests: unit + doc + runtime
 cargo test -p helix-staking --lib                             # one program's unit tests
 cargo test -p helix-staking --lib -- --nocapture rounding     # one test, with output
 
@@ -21,13 +21,16 @@ anchor build 2>&1 | tee build.log
 grep -i "stack offset" build.log     # MUST be empty — see below
 ```
 
-`--all-features` matters: the indexer's `rpc` and `server` modules are the only ones that
-open a socket and are both off by default, so a plain `clippy` never looks at them.
+`--all-features` matters: the indexer's `rpc`, `server` and `postgres` modules hold all of
+its I/O and are all off by default, so a plain `clippy` never looks at any of them.
 
-### Running the six live tests
+### Running the live tests
 
-Six tests need an RPC endpoint rather than LiteSVM. They **skip and pass** when
-`HELIX_RPC_URL` is unset, which is why the count above is the same either way.
+Sixteen tests need something outside the process — a validator or a database. All of them
+**skip and pass** when the relevant environment variable is unset, which is why the count
+above is the same either way. That is deliberate: a suite that fails on a clean checkout
+trains people to ignore red, and `#[ignore]` hides the reason behind a flag someone has to
+already know about.
 
 ```bash
 solana-test-validator --reset &                # a real cluster, no faucet needed
@@ -42,6 +45,15 @@ HELIX_RPC_URL=http://127.0.0.1:8899 \
 
 `--test-threads=1` because they share one ledger, and one of them asserts that a poll
 picked up exactly the transactions it sent.
+
+The ten storage tests need Postgres instead, and run in parallel — each takes its own
+schema:
+
+```bash
+docker run -d --name helix-postgres -e POSTGRES_PASSWORD=helix -e POSTGRES_USER=helix   -e POSTGRES_DB=helix -p 55432:5432 postgres:16-alpine
+
+HELIX_DATABASE_URL=postgres://helix:helix@127.0.0.1:55432/helix   cargo test -p helix-integration-tests --test store_postgres
+```
 
 **A local validator is a real cluster.** Devnet deployment is blocked on faucet funding,
 but nothing about `getSignaturesForAddress` or `getTransaction` needs devnet specifically —
@@ -70,14 +82,15 @@ code you did not expect.
 
 ## What is covered
 
-**121 unit tests** over pure functions and state machines, **95 runtime tests** against the
-real BPF programs under LiteSVM, and **6 live tests** against a validator over JSON-RPC.
+**127 unit tests** over pure functions and state machines, **98 runtime tests** against the
+real BPF programs under LiteSVM, and **16 live tests** against a validator and a Postgres
+instance.
 
 The three tiers are not a hierarchy but a statement about what each can prove. Unit tests
-reach arithmetic and state machines; LiteSVM reaches the wiring between programs; only a
-cluster reaches the transport. Each tier is used for the smallest set of claims that
-genuinely needs it, and the live tier is the smallest of the three by design — see
-[`indexer/src/rpc.rs`](../indexer/src/rpc.rs).
+reach arithmetic and state machines; LiteSVM reaches the wiring between programs; only real
+infrastructure reaches the transport and the storage. Each tier is used for the smallest set
+of claims that genuinely needs it, and the live tier is the smallest of the three by design
+— see [`indexer/src/rpc.rs`](../indexer/src/rpc.rs).
 
 ### Unit tests
 
@@ -101,6 +114,7 @@ genuinely needs it, and the live tier is the smallest of the three by design —
 | Position closing | 3 | An empty position is closable and a weight-bearing one is not; settling an empty position is a no-op at any accumulator value, which is why `close_position` needs no settlement step |
 | Read API | 6 | The two finality views differ and each says which it is, a u64 past 2^53 survives a JSON round trip, undefined APR is null, small shares do not round away |
 | RPC source | 4 | A JSON-RPC error object is an error despite the HTTP 200; a null `logMessages` and an unknown signature each decode as *absent* rather than as a transaction that emitted nothing; every program is followed by default |
+| Storage binding | 6 | A commit rewrites only the entities its batch touched, and at the *highest* slot it touched them; the stored payload decodes back to the event it came from; every lock tier and proposal state survives its `Debug`-name round trip and an unknown one is an error rather than a default; a u64 past 2^63 survives as text |
 
 ### Runtime tests
 
@@ -122,14 +136,16 @@ genuinely needs it, and the live tier is the smallest of the three by design —
 
 ### Live tests
 
-Against a validator, not LiteSVM. Skipped unless `HELIX_RPC_URL` is set.
+Against real infrastructure, not LiteSVM. Skipped unless the environment names it.
 
-| File | Tests | What is asserted |
-|---|---|---|
-| `rpc_source_live.rs` | 6 | Phase 4.1 — a projection built over `getSignaturesForAddress` + `getTransaction` matches the accounts on chain; ledger order survives *inside* a slot; a rolled-back transaction whose log still carries its events contributes nothing; a cursor advanced by real finality neither replays nor reads as a fork; the finalized watermark is read from the cluster and moves; one transaction reported under three addresses is folded once |
+| File | Tests | Needs | What is asserted |
+|---|---|---|---|
+| `rpc_source_live.rs` | 6 | `HELIX_RPC_URL` | Phase 4.1 — a projection built over `getSignaturesForAddress` + `getTransaction` matches the accounts on chain; ledger order survives *inside* a slot; a rolled-back transaction whose log still carries its events contributes nothing; a cursor advanced by real finality neither replays nor reads as a fork; the finalized watermark is read from the cluster and moves; one transaction reported under three addresses is folded once |
+| `store_postgres.rs` | 10 | `HELIX_DATABASE_URL` | Phase 4.2 — a restart reaches the state it saved, field by field across every projection map; a replayed batch changes nothing; a redelivery *after* a restart does not double-count; a backfill at an older slot cannot overwrite a newer live write; a commit that fails part way leaves the cursor and the rows where they were; a closed position's row goes with the account while `position_count` does not; a u64 above 2^63 survives the database; nothing unfinalised is written; a database at another schema version is refused; an anomaly is stored with the signature that makes it actionable |
 
-These are also where `helix_ops::plan` — the bootstrap an operator sends — is submitted to
-something with a mempool for the first time, rather than only executed in-process.
+The RPC set is also where `helix_ops::plan` — the bootstrap an operator sends — is
+submitted to something with a mempool for the first time, rather than only executed
+in-process.
 
 ### Testing conventions worth copying
 
@@ -484,6 +500,74 @@ mid-slot expressible — but the earlier claim that the signature form was *wron
 itself wrong, and is corrected in [`rpc.rs`](../indexer/src/rpc.rs). **A mutation that
 survives is a result, not a gap to be papered over with a test that manufactures a
 failure.**
+
+### The storage tests, mutated the same way
+
+Same procedure, applied to Phase 4.2 before believing any of it. Ten tests, all passing on
+the first run — which after the section above is not evidence of anything. Seven hazards
+injected, each the implementation someone would plausibly write:
+
+```text
+mutation                                     outcome
+-------------------------------------------------------------------------------
+applied set not restored on load             CAUGHT  a_redelivery_after_a_restart_does_not_double_count
+upsert slot guard removed                    CAUGHT  an_older_slot_cannot_overwrite_a_newer_row
+cursor written outside the transaction       CAUGHT  a_failed_commit_leaves_the_cursor_and_the_rows_where_they_were
+closed position's row not deleted            CAUGHT  a_closed_position_leaves_no_row_but_keeps_the_electorate_boundary
+amount narrowed to i64 on the way in         CAUGHT  an_amount_above_the_signed_range_survives_the_database
+`ON CONFLICT DO NOTHING` dropped on events   CAUGHT  committing_the_same_batch_twice_changes_nothing
+unfinalised transactions reported as settled CAUGHT  only_finalised_transactions_are_written
+```
+
+Every one was caught by exactly the test named for it and by no other, which is the
+property worth having: a suite where one mutation reddens nine tests is telling you the
+tests overlap, not that they are thorough.
+
+Two of the seven only work because the test constructs the situation deliberately, and both
+say so in an assertion rather than in a comment:
+
+- **The redelivery test first proves the hazard exists.** `Staked` accumulates, unlike most
+  of the projection, and the test asserts that folding it under two signatures really does
+  double the total before asserting that folding it under one does not. Without that, a
+  future change making `Staked` carry a running total would silently turn the test into a
+  tautology.
+- **The atomicity test drops the `votes` table** so a statement fails *after* the event rows
+  and several projection tables have been written. A failure on the first statement would
+  prove nothing about a torn write.
+
+An eighth mutation targets the coverage check rather than the store: putting
+`RealmParamsUpdated` back the way it was — absent from the decoder's list — is CAUGHT by
+`the_indexer_decodes_every_event_the_programs_declare`. Reproducing it needs edits in three
+files, because the fold and the store are exhaustive matches and so are compile-coupled to
+the list. **Only the list itself is unforced, which is exactly why it was the thing that
+drifted.**
+
+**One procedural note, learned the hard way here.** A mutation script that restores files
+with `shutil.move` restores their *mtime* too, so cargo sees an unchanged source and reuses
+the mutated binary. The next full run reported a failure that no longer existed in the
+source. This is the same hazard as "`cargo test` does not rebuild the programs", one level
+up: touch the file after restoring, or verify against a clean rebuild.
+
+### What the operator rehearsal caught that no test did
+
+The runbook step "point `helix-index` at the cluster, then restart it" is not redundant with
+the suite. Run against a validator still holding the previous build, it printed:
+
+```text
+anomaly: 31PhgSLZ...xpLXZ UndecodableData { log_index: 23, program: Governance }
+... 5 times, and 0 realms
+```
+
+`RealmInitialized` had gained `min_weight_to_propose` in this phase, so the deployed program
+was emitting the old, shorter body and Borsh refused it. Every test passed — because the
+tests build the event and decode it with the *same* build, which is precisely the pair that
+can never disagree. Only two different builds, one on chain and one in the reader, can
+demonstrate this, and only a deployment produces that pair.
+
+The behaviour is correct: refusing beats decoding a prefix and defaulting the rest. It is
+also the mirror of the case `event.rs` documents, where an anomaly means the indexer is
+*older* than the chain. **The rehearsal is the only thing in this repository that can tell
+you which of the two you have**, which is why it is a runbook step rather than a suggestion.
 
 ## CI
 

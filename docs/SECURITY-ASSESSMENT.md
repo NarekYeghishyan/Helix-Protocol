@@ -6,7 +6,7 @@ assessment, recommended mitigations.*
 **Scope:** the four programs under [`programs/`](../programs) at commit time.
 **Method:** manual review of every instruction's authority checks and arithmetic;
 invariant derivation ([INVARIANTS.md](./INVARIANTS.md)); adversarial modelling
-([THREAT-MODEL.md](./THREAT-MODEL.md)); 95 runtime tests against the real BPF programs;
+([THREAT-MODEL.md](./THREAT-MODEL.md)); 98 runtime tests against the real BPF programs;
 stateful fuzzing with the invariants as the oracle; `cargo clippy -D warnings`;
 `cargo audit`.
 **Not performed:** external audit, formal verification, any execution against a real
@@ -118,7 +118,7 @@ Severity = impact × likelihood, CVSS-style but judged rather than computed.
 | F-1 | Initialisers are front-runnable | **Medium** | Open — mitigated operationally, and now **detected** by `helix-bootstrap --verify` |
 | F-2 | `unpaid_liability` used deposits as liability, making any non-zero reward rate unsettable | **High** | **Fixed** |
 | F-3 | SBF stack frame overflow in three `Accounts` structs | **High** | **Fixed** |
-| F-4 | Cross-program flows unverified at runtime | **High** | **Fixed** — 95 runtime tests; the two named gaps, staking withdrawal and vesting, are covered |
+| F-4 | Cross-program flows unverified at runtime | **High** | **Fixed** — 98 runtime tests; the two named gaps, staking withdrawal and vesting, are covered |
 | F-5 | Upgrade authority not migrated to governance | **Critical** (if deployed) | Open — Phase 7 |
 | F-6 | Guardian key compromise causes governance denial of service | **Low** | Accepted |
 | F-7 | `Position` accounts are never closed | **Informational** | **Fixed** — and fixing it nearly reopened F-10 |
@@ -559,7 +559,7 @@ verification became a command with an exit code rather than a checklist item.
 
 ## 4. Recommended mitigations, prioritised
 
-1. ~~**Integration tests, fee-bearing mint first** (F-4).~~ Done — 95 runtime tests
+1. ~~**Integration tests, fee-bearing mint first** (F-4).~~ Done — 98 runtime tests
    against the real BPF programs, the fee path mutation-tested.
 2. ~~**Atomic bootstrap + post-deploy authority verification** (F-1).~~ Done — the plan is
    [`helix_ops::plan`](../ops), executed by the suite, and the verification is

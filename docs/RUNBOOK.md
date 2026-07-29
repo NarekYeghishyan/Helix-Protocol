@@ -53,14 +53,19 @@ anchor build 2>&1 | tee build.log
       frame overflows as errors and *still exits 0* — the exit code cannot be trusted.
       See [F-3](./SECURITY-ASSESSMENT.md#f-3--sbf-stack-frame-overflow).
 - [ ] `anchor keys verify` — declared IDs match the keypairs
-- [ ] Runtime tests pass — `cargo test --workspace` covers the unit, doc and 95 runtime
+- [ ] Runtime tests pass — `cargo test --workspace` covers the unit, doc and 98 runtime
       tests, including the fuzz campaign
 - [ ] **Rehearse against a local validator.** `solana-test-validator --reset`, deploy all
-      four, then run the six live tests with `HELIX_RPC_URL` set
-      ([TESTING.md](./TESTING.md#running-the-six-live-tests)). This is the only step that
+      four, then run the live tests with `HELIX_RPC_URL` and `HELIX_DATABASE_URL` set
+      ([TESTING.md](./TESTING.md#running-the-live-tests)). This is the only step that
       exercises the bootstrap transaction through preflight and a mempool rather than
       in-process, and it costs nothing — the one-shot transaction in step 2 is the worst
       possible place to discover that a plan only works under LiteSVM
+- [ ] **Point `helix-index` at the rehearsal cluster and then restart it**, with
+      `--database-url`. It should print `resuming at slot N` with a populated projection
+      rather than starting over. A restart that silently re-reads from genesis is not
+      visible in any single run, and the two-line difference in the startup output is the
+      whole of the evidence
 - [ ] `cargo audit` clean
 
 ## 2. Deploy

@@ -20,6 +20,19 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::event::HelixEvent;
 use crate::logs::EmittedEvent;
 
+/// The realm's own executor PDA — the authority a self-governing realm holds.
+///
+/// Derived with the program's own seed constant rather than a copy of the string,
+/// so a seed change is a rebuild here too instead of a projection that quietly
+/// reports every realm as externally governed.
+fn executor_of(realm: &Pubkey) -> Pubkey {
+    Pubkey::find_program_address(
+        &[helix_governance::constants::EXECUTOR_SEED, realm.as_ref()],
+        &helix_governance::ID,
+    )
+    .0
+}
+
 /// Identifies an event uniquely across the whole chain.
 ///
 /// A transaction signature is not enough on its own: one transaction emits
@@ -44,6 +57,15 @@ pub struct PoolStats {
     pub total_rewards_funded: u64,
     pub total_rewards_paid: u64,
     pub paused: bool,
+    /// True when the first event touching this pool was not its initialisation.
+    ///
+    /// The figures below are then the best available rather than the complete
+    /// ones, and the difference is not visible in the numbers themselves — a
+    /// pool whose first 10,000 stakes were never seen has a plausible `total_staked`
+    /// that is simply too small. `Analytics::orphaned` records that *something*
+    /// started mid-history; this records *which entity*, which is what a caller
+    /// reading one pool actually needs.
+    pub partial_history: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -87,6 +109,34 @@ pub struct TreasuryStats {
     /// Streams that have not been revoked, by stream account.
     pub open_streams: BTreeMap<Pubkey, StreamStats>,
     pub total_stream_claims: u64,
+    /// See [`PoolStats::partial_history`].
+    pub partial_history: bool,
+}
+
+/// A governance realm: who sets the rules, and what the rules are.
+///
+/// Projected because `min_weight_to_propose`, `quorum_bps` and `approval_bps`
+/// decide what "passing" means, and a dashboard showing a vote tally without them
+/// is showing a numerator with no denominator. `self_governing` is the one fact
+/// this whole protocol is built to reach — see ROADMAP Phase 7.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RealmStats {
+    pub authority: Option<Pubkey>,
+    pub guardian: Option<Pubkey>,
+    pub staking_pool: Option<Pubkey>,
+    pub quorum_bps: u16,
+    pub approval_bps: u16,
+    pub voting_period: i64,
+    pub timelock_delay: i64,
+    pub min_weight_to_propose: u64,
+    /// True once the realm's parameters answer only to the realm itself.
+    ///
+    /// Derived at initialisation by comparing the authority against the realm's
+    /// own executor PDA, and read straight off the event thereafter — the program
+    /// computes it, so the indexer does not have to agree with it separately.
+    pub self_governing: bool,
+    /// See [`PoolStats::partial_history`].
+    pub partial_history: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -105,6 +155,7 @@ pub struct Analytics {
     pub positions: BTreeMap<Pubkey, PositionStats>,
     pub proposals: BTreeMap<Pubkey, ProposalStats>,
     pub treasuries: BTreeMap<Pubkey, TreasuryStats>,
+    pub realms: BTreeMap<Pubkey, RealmStats>,
     /// Every event already folded in, so a redelivery changes nothing.
     applied: BTreeSet<EventId>,
     /// Events that referenced an entity never seen created.
@@ -123,6 +174,35 @@ impl Analytics {
 
     pub fn applied_count(&self) -> usize {
         self.applied.len()
+    }
+
+    /// Records `id` as already folded in, without folding it.
+    ///
+    /// For a projection loaded from storage. The persisted rows carry the *result*
+    /// of folding an event; they do not carry the fact that it was folded, and
+    /// that fact is load-bearing.
+    ///
+    /// Most of this projection assigns running totals the events carry, which is
+    /// why replay is safe — but not all of it does. `Staked`, `Unstaked`,
+    /// `RewardsClaimed` and `StreamClaimed` genuinely accumulate, because the
+    /// chain publishes a delta for those and no running total to assign. For
+    /// those four, idempotency is *entirely* the `applied` set, so a projection
+    /// restored without it double-counts the first redelivery after a restart —
+    /// silently, and only for the transactions straddling the restart, which is
+    /// the hardest kind of wrong number to notice.
+    ///
+    /// Returns false if it was already known.
+    pub fn mark_applied(&mut self, id: EventId) -> bool {
+        self.applied.insert(id)
+    }
+
+    /// Every event folded in so far.
+    ///
+    /// Ordered by signature then log index — the ordering `EventId` derives —
+    /// which is not ledger order. Callers wanting ledger order have the slot,
+    /// which lives with the source, not here.
+    pub fn applied_ids(&self) -> impl Iterator<Item = &EventId> {
+        self.applied.iter()
     }
 
     /// Folds in every event of one transaction.
@@ -163,17 +243,36 @@ impl Analytics {
     /// running totals rather than deltas, but "best available" and "complete" are
     /// different claims and the caller is entitled to know which one it has.
     fn pool_mut(&mut self, pool: Pubkey, id: &EventId) -> &mut PoolStats {
-        if !self.pools.contains_key(&pool) {
+        let unseen = !self.pools.contains_key(&pool);
+        if unseen {
             self.orphaned.insert(id.clone());
         }
-        self.pools.entry(pool).or_default()
+        let stats = self.pools.entry(pool).or_default();
+        // Sticky: a later `PoolInitialized` does not retract it. In ledger order
+        // the initialisation comes first, so seeing it second means the stream is
+        // out of order — and the totals folded before it are already wrong.
+        stats.partial_history |= unseen;
+        stats
     }
 
     fn treasury_mut(&mut self, treasury: Pubkey, id: &EventId) -> &mut TreasuryStats {
-        if !self.treasuries.contains_key(&treasury) {
+        let unseen = !self.treasuries.contains_key(&treasury);
+        if unseen {
             self.orphaned.insert(id.clone());
         }
-        self.treasuries.entry(treasury).or_default()
+        let stats = self.treasuries.entry(treasury).or_default();
+        stats.partial_history |= unseen;
+        stats
+    }
+
+    fn realm_mut(&mut self, realm: Pubkey, id: &EventId) -> &mut RealmStats {
+        let unseen = !self.realms.contains_key(&realm);
+        if unseen {
+            self.orphaned.insert(id.clone());
+        }
+        let stats = self.realms.entry(realm).or_default();
+        stats.partial_history |= unseen;
+        stats
     }
 
     fn fold(&mut self, id: EventId, event: &HelixEvent) {
@@ -346,7 +445,38 @@ impl Analytics {
                     self.orphaned.insert(id);
                 }
             },
-            E::RealmInitialized(_) => {}
+            E::RealmInitialized(e) => {
+                let self_governing = e.authority == executor_of(&e.realm);
+                let realm = self.realms.entry(e.realm).or_default();
+                realm.authority = Some(e.authority);
+                realm.guardian = Some(e.guardian);
+                realm.staking_pool = Some(e.staking_pool);
+                realm.quorum_bps = e.quorum_bps;
+                realm.approval_bps = e.approval_bps;
+                realm.voting_period = e.voting_period;
+                realm.timelock_delay = e.timelock_delay;
+                realm.min_weight_to_propose = e.min_weight_to_propose;
+                realm.self_governing = self_governing;
+            }
+            E::RealmParamsUpdated(e) => {
+                let realm = self.realm_mut(e.realm, &id);
+                realm.quorum_bps = e.quorum_bps;
+                realm.approval_bps = e.approval_bps;
+                realm.voting_period = e.voting_period;
+                realm.timelock_delay = e.timelock_delay;
+                realm.min_weight_to_propose = e.min_weight_to_propose;
+                // `by_proposal` is deliberately not projected. It is a property of
+                // how one change was made, not of the realm's current state, and
+                // the place to keep it is the event log — which is stored.
+            }
+            E::RealmAuthorityChanged(e) => {
+                let realm = self.realm_mut(e.realm, &id);
+                realm.authority = Some(e.new_authority);
+                // Read from the event rather than recomputed from `new_authority`.
+                // The program already decided this; deriving it again here is a
+                // second implementation that agrees until the seed changes.
+                realm.self_governing = e.self_governing;
+            }
 
             // ------------------------------------------------------ treasury
             E::TreasuryInitialized(e) => {

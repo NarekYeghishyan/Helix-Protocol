@@ -83,6 +83,27 @@ jobs:
     name: Build & test programs
     runs-on: ubuntu-latest
     timeout-minutes: 45
+
+    # The storage tests skip themselves without HELIX_DATABASE_URL, which keeps a
+    # clean checkout green — but a test that always skips is a test that has
+    # stopped running. A service container is the one piece of external
+    # infrastructure CI can supply cheaply, so it does. (A validator is not: the
+    # six RPC tests still skip here and are run locally.)
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: helix
+          POSTGRES_PASSWORD: helix
+          POSTGRES_DB: helix
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U helix"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
     steps:
       - uses: actions/checkout@v4
 
@@ -152,21 +173,24 @@ jobs:
       # hides. It also picks up the runtime tests under tests/integration, which
       # load the .so files the previous step just built, and the compute
       # benchmarks that assert every instruction stays inside its budget.
-      - name: Rust tests (unit + doc + runtime)
+      #
+      # HELIX_DATABASE_URL points at the service container above, so the ten
+      # storage tests run rather than skip. The six RPC tests still skip — they
+      # need a validator, which is run locally (see docs/TESTING.md). Skipping is
+      # reported by the test itself rather than by an `#[ignore]`, so the reason
+      # is in the output rather than in a flag someone has to know about.
+      - name: Rust tests (unit + doc + runtime + storage)
+        env:
+          HELIX_DATABASE_URL: postgres://helix:helix@localhost:5432/helix
         run: cargo test --workspace
 
-      # The read API's HTTP transport and the RPC source are behind features, so
-      # `--workspace` alone never compiles either. Targeted rather than a
-      # workspace-wide `--all-features`, which would also switch on Anchor's
-      # `idl-build` and break the program crates.
-      #
-      # The six live tests in `rpc_source_live.rs` skip here: they need
-      # HELIX_RPC_URL pointing at a validator, and CI has none. They are run
-      # against `solana-test-validator` locally — see docs/TESTING.md. Skipping
-      # is reported by the test itself rather than by an `#[ignore]`, so the
-      # reason is in the output rather than in a flag someone has to know about.
-      - name: Read API transport and RPC source
-        run: cargo test -p helix-indexer --features server,rpc
+      # The read API's HTTP transport is behind a feature that `--workspace`
+      # never enables on its own. (`rpc` and `postgres` are already reached
+      # through the integration crate's dependency on the indexer.) Targeted
+      # rather than a workspace-wide `--all-features`, which would also switch on
+      # Anchor's `idl-build` and break the program crates.
+      - name: Read API transport
+        run: cargo test -p helix-indexer --features server,rpc,postgres
 
       # `anchor test` is deliberately not run. The runtime suite is Rust against
       # LiteSVM, executed by the step above; there is no TypeScript suite, and

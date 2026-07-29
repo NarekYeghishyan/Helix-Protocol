@@ -538,7 +538,7 @@ fn the_ingestor_survives_a_reorg_and_still_matches_the_chain() {
     let mut ingestor = Ingestor::new();
     let outcome = ingestor.poll(&mut source, 100).expect("first poll");
     assert_eq!(outcome.applied, 4);
-    assert_eq!(outcome.finalized, 2);
+    assert_eq!(outcome.finalized(), 2);
     assert!(!outcome.was_reorg());
 
     // Head sees all three stakes and matches the chain exactly.

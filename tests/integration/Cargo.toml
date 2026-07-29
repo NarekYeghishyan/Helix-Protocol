@@ -23,7 +23,7 @@ helix-treasury = { path = "../../programs/treasury", features = ["no-entrypoint"
 # with the chain needs a chain, and this is where one is. `rpc` is on because
 # the live tests read a real validator through the very source a deployment
 # would use, rather than through a second client written for the test.
-helix-indexer = { path = "../../indexer", features = ["rpc"] }
+helix-indexer = { path = "../../indexer", features = ["rpc", "postgres"] }
 
 # Likewise the deployment plan: `bootstrap_atomicity.rs` executes the very
 # instructions `helix-bootstrap` emits, so the plan an operator reads is the plan
@@ -59,3 +59,9 @@ bincode = "1.3"
 ureq = { version = "3", features = ["json"] }
 serde_json = "1"
 base64 = "0.22"
+
+# `store_postgres.rs` only, and only for the setup and the assertions: the
+# binding under test is `helix_indexer::store`, and a test that read rows back
+# through that same binding could not tell a symmetric encoding bug from a
+# correct one. Same version as the indexer, so one driver is compiled.
+postgres = "0.19"
