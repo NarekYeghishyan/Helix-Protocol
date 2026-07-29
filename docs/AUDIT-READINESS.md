@@ -39,8 +39,8 @@ liquid staking derivatives. Reasons in [ROADMAP.md](./ROADMAP.md#explicitly-out-
 
 | | |
 |---|---|
-| Tests | 192 — 109 unit, 83 runtime against the real BPF programs |
-| Invariants | 57 documented, 54 verified, 3 untested — [INVARIANTS.md](./INVARIANTS.md) |
+| Tests | 212 — 117 unit, 95 runtime against the real BPF programs |
+| Invariants | 58 documented, all verified — [INVARIANTS.md](./INVARIANTS.md) |
 | Fuzzing | Stateful, invariants as the oracle, 22 sequences × 150 operations per run |
 | Compute | Every instruction measured; worst is 17.9% of the default budget |
 | Lints | `clippy -D warnings`, `fmt --check`, `cargo audit`, all clean in CI |
@@ -58,7 +58,7 @@ Eleven findings. The interesting column is the last one.
 | F-4 | High | Fixed | Stating the coverage gap explicitly, then closing it |
 | F-5 | Critical if deployed | Open, Phase 7 | Manual review of deployment posture |
 | F-6 | Low | Accepted | Adversarial modelling |
-| F-7 | Informational | Open | Manual review |
+| F-7 | Informational | Fixed | Manual review |
 | F-8 | Medium | Fixed | **Attempting to test an instruction** and finding it unreachable |
 | F-9 | Low | Fixed | **Writing the deployment runbook** step by step |
 | F-10 | High | Fixed | **Stateful fuzzing** |
@@ -67,7 +67,8 @@ Eleven findings. The interesting column is the last one.
 Grouped by method:
 
 - **Manual review: 4** (F-1, F-5, F-6, F-7). All are posture or design-trade findings.
-  Manual review found no arithmetic or state-machine bug at all.
+  Manual review found no arithmetic or state-machine bug at all — though F-7, the most
+  trivial-looking of the four, turned out to have a High hiding in its fix.
 - **Trying to exercise the code: 3** (F-2, F-8, F-9). Every one was an
   instruction that could not be reached, or a guard that could never pass. All three are
   invisible to a per-program test suite because each individual piece is correct.
@@ -96,6 +97,11 @@ the first has been applied to every privileged instruction rather than left as a
 1. For every privileged instruction, *which concrete transaction produces its signer?*
 2. When an authority is transferred, does the recipient also gain every *power* that
    authority carries?
+3. For every monotonic counter, *what else reads it?* Added after `close_position`.
+   `pool.position_count` is a PDA seed and an electorate boundary as well as a count, and
+   the obvious rent-reclamation fix decrements it — which silently reopens F-10. A counter
+   whose name suggests "how many exist now" but whose meaning is "how many have ever
+   existed" is a trap that costs nothing to check for and a High to miss.
 
 ## 4. What an auditor should not need to re-derive
 
@@ -111,22 +117,42 @@ elsewhere. They are listed so they can be *spot-checked* rather than reproduced.
 | The event log reconstructs on-chain state | [`indexer_reconciliation.rs`](../tests/integration/tests/indexer_reconciliation.rs) compares the projection to the accounts field by field |
 | Only the governance executor can move treasury funds | Runtime negative test per threat-model attack |
 
-Mutation testing was used on the two claims where a passing test proves least — the
-transfer-fee accounting and the indexer's CPI attribution. In both cases the injected bug
-turns the targeted tests red while the tests that *cannot* distinguish the mutation stay
-green, which is the property that makes the suite meaningful rather than merely large.
+Mutation testing was used on the three claims where a passing test proves least — the
+transfer-fee accounting, the indexer's CPI attribution, and `close_position` leaving
+`pool.position_count` alone. In each case the injected bug turns the targeted tests red
+while the tests that *cannot* distinguish the mutation stay green, which is the property
+that makes the suite meaningful rather than merely large.
+
+The third is the one to spot-check, because the mutation is the implementation most people
+would write: decrementing the counter on close. It reopens
+[F-10](./SECURITY-ASSESSMENT.md#f-10--post-snapshot-weight-could-vote) — a High closed two
+phases earlier — through a change about reclaiming rent. See
+[TESTING.md](./TESTING.md#mutation-testing-and-why-it-is-the-real-check).
 
 ## 5. What is still open
 
 | ID | Severity | Why it is still open |
 |---|---|---|
 | F-5 | Critical **if deployed** | The upgrade authority is unmigrated. Currently theoretical — nothing is deployed — and the dominant risk the moment that changes. Phase 7 |
-| F-1 | Medium | Initialisers are front-runnable. Mitigated by the atomic bootstrap, which is measured and tested; the residual window cannot be closed in-program without a deployer gate |
-| F-7 | Informational | `Position` accounts are never closed, so rent is not reclaimed on full exit |
+| F-1 | Medium | Initialisers are front-runnable. Mitigated by the atomic bootstrap, which is measured and tested, and now *detected* by `helix-bootstrap --verify`; the residual window cannot be closed in-program without a deployer gate |
 | F-6 | Low | A compromised guardian key can veto every proposal. Accepted: the alternative is a guardian that cannot stop anything |
 
-Three invariants remain untested: §5.3 and §5.5 need a deployment to assert against, and
-§5.8 (initialisers cannot install an unintended authority) is F-1 restated as a property.
+**Nothing else is open, and the last three invariants closed with a correction attached.**
+An earlier version of this section said §5.3 and §5.5 "need a deployment to assert
+against". That was wrong. Both are runtime properties, and a runtime test is LiteSVM, not a
+cluster — the same distinction this document makes everywhere else, missed on the one row
+where it was load-bearing. They were untested because nobody had written them, and the
+invariant table meanwhile named tests for both that did not exist.
+
+§5.8 was the more interesting one. It asserted "initialisers cannot install an unintended
+authority", which is not a property these programs have and cannot be made into one; it was
+F-1 written in the grammar of an invariant, and so it could never fail. It now asserts what
+is true and checkable — an unintended authority is detected before anything of value is
+deposited — and the suite runs that check against a system whose pool really was front-run.
+
+Worth an auditor's attention as a pattern rather than a finding: an invariant that cannot
+fail is indistinguishable from one that always holds, and the table gave no way to tell
+them apart.
 
 ## 6. Limits of everything above
 

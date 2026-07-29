@@ -297,6 +297,28 @@ impl Position {
     pub fn can_vote_until(&self, voting_ends_at: i64) -> bool {
         self.lock_end >= voting_ends_at
     }
+
+    /// The guard `close_position` applies, expressed once.
+    ///
+    /// All three fields must be zero, and `weighted_amount` is the one that
+    /// carries a real hazard. `pool.total_weighted` is decremented only by
+    /// `unstake`; closing a position that still carried weight would strand
+    /// that weight in the reward denominator permanently and silently dilute
+    /// every other staker, with no event to explain the drift.
+    pub fn ensure_closable(&self) -> Result<()> {
+        require!(
+            self.amount == 0 && self.weighted_amount == 0,
+            StakingError::PositionNotEmpty
+        );
+        require!(self.pending_rewards == 0, StakingError::UnclaimedRewards);
+        Ok(())
+    }
+
+    /// Convenience over [`Self::ensure_closable`], so the unit tests exercise
+    /// the deployed guard rather than a restatement of it.
+    pub fn is_closable(&self) -> bool {
+        self.ensure_closable().is_ok()
+    }
 }
 
 #[cfg(test)]
@@ -582,6 +604,51 @@ mod tests {
 
         expiring.lock_end = voting_ends_at; // exactly enough
         assert!(expiring.can_vote_until(voting_ends_at));
+    }
+
+    // ---------------------------------------------------------------- closing
+
+    #[test]
+    fn a_position_is_closable_only_when_it_holds_nothing() {
+        let mut p = position(1_000, LockTier::Bronze);
+        assert!(!p.is_closable());
+
+        // Fully exited, but the reward credit is still owed.
+        p.amount = 0;
+        p.weighted_amount = 0;
+        p.pending_rewards = 7;
+        assert!(!p.is_closable());
+
+        p.pending_rewards = 0;
+        assert!(p.is_closable());
+    }
+
+    #[test]
+    fn weight_without_principal_still_blocks_closing() {
+        // The state `close_position` must refuse even though the position looks
+        // empty: `pool.total_weighted` still counts this weight, and closing
+        // would leave it in the denominator with nothing to remove it.
+        let mut p = position(1_000, LockTier::Gold);
+        p.amount = 0;
+        p.pending_rewards = 0;
+        assert_eq!(p.weighted_amount, 1_000);
+        assert!(!p.is_closable());
+    }
+
+    #[test]
+    fn settling_is_a_no_op_on_an_empty_position() {
+        // Why `close_position` needs no settlement step. With zero weight the
+        // position earns nothing for *any* future accumulator value, so the
+        // `pending_rewards == 0` it checks cannot go stale between the last
+        // unstake and the close — however far the pool has advanced.
+        let mut p = position(0, LockTier::Gold);
+        assert!(p.is_closable());
+
+        for accumulator in [1u128, PRECISION, PRECISION * 1_000_000, u128::MAX / 2] {
+            p.settle(accumulator).unwrap();
+            assert_eq!(p.pending_rewards, 0);
+            assert!(p.is_closable());
+        }
     }
 
     #[test]

@@ -8,7 +8,7 @@ Rust with the Anchor framework.
 [![Solana](https://img.shields.io/badge/solana-3.x-purple)](https://solana.com)
 [![License](https://img.shields.io/badge/license-Apache--2.0-green)](./LICENSE)
 
-> **Status: unaudited. Not deployed.** All four programs build to BPF and pass 192 tests
+> **Status: unaudited. Not deployed.** All four programs build to BPF and pass 212 tests
 > locally, including runtime tests that execute the full governance → treasury authority
 > chain and a real Token-2022 mint with transfer fees. The analytics stack and a devnet
 > deployment are scoped in [ROADMAP.md](./docs/ROADMAP.md). Nothing here has held real
@@ -130,7 +130,7 @@ programs/
   governance/      proposal lifecycle, lock-gated voting, timelock
   treasury/        vault, vesting streams, per-epoch spend limits
 indexer/           event decoding, reorg-safe ingestion, projection, read API
-ops/               the atomic bootstrap as a plan, executed by the test suite
+ops/               the atomic bootstrap as a plan, plus the audit that verifies it landed
 app/               Next.js dashboard and wallet connection over that API
 tests/integration/ runtime tests against the real BPF programs via LiteSVM
 scripts/           toolchain bootstrap, program keys, documentation link check
@@ -144,27 +144,40 @@ one is Anchor's.
 ## Testing
 
 ```bash
-anchor build 2>&1 | tee build.log
+anchor build 2>&1 | tee build.log  # not optional — see below
 grep -i "stack offset" build.log   # must be empty — anchor build exits 0 even when it isn't
-cargo test --workspace             # 192 tests: unit + doc + runtime
+cargo test --workspace             # 212 tests: unit + doc + runtime
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all -- --check
 ```
 
-**109 unit tests** cover the reward accumulator, vesting schedule, tally arithmetic and
+`anchor build` first, every time. The runtime tests load `.so` files from `target/deploy`
+and `cargo test` does not rebuild them, so a stale artifact means the suite passes against
+a program that is not the one in front of you. That is not hypothetical — it happened while
+mutation-testing this repo, and the symptom was six unrelated failures with a misleading
+error code.
+
+**117 unit tests** cover the reward accumulator, vesting schedule, tally arithmetic and
 every state machine directly — including a differential check that fixed-point rounding
 never favours the user over the pool.
 
-**83 runtime tests** ([`tests/integration/`](./tests/integration)) execute the real BPF
+**95 runtime tests** ([`tests/integration/`](./tests/integration)) execute the real BPF
 programs against the real Token-2022 program via LiteSVM: the full authority chain (a
 passed, timelocked proposal moving treasury funds), the staking withdrawal paths, and a
 negative test for each attack in the [threat model](./docs/THREAT-MODEL.md) — direct
 treasury calls, pre-timelock execution, double execution, double voting, flash-staked
 voting, and substituted destinations.
 
-Of 57 documented invariants, **54 are verified, 3 untested** — tracked row by
-row in [INVARIANTS.md](./docs/INVARIANTS.md). That table is kept honest deliberately: a
-claim no test can falsify is documentation, not a guarantee.
+All **58 documented invariants are now verified** — tracked row by row in
+[INVARIANTS.md](./docs/INVARIANTS.md). Getting the last three there was not a matter of
+writing three tests. Two of them named a test that did not exist, which reads as verified
+to anyone skimming and is worse than an empty cell. The third asserted something false:
+"initialisers cannot install an unintended authority" is not a property these programs
+have — they are first-caller-wins — so it was restated as the thing that is true and can
+fail, and [`helix-bootstrap --verify`](./ops) is now that check.
+
+A claim no test can falsify is documentation, not a guarantee. An invariant that *cannot*
+fail is not even that.
 
 Writing those tests found a real architectural hole. Vesting, the treasury spend cap and
 governance migration were all **unreachable on chain** — governance had no `ProposalAction`
@@ -186,7 +199,7 @@ the schema from an IDL has a second copy to keep in sync, and nothing compares t
 Building it found that `Unstaked` was not self-sufficient: reconstructing
 `pool.total_weighted` meant re-running the lock-tier table off chain, which would agree with
 the program until the day the table changed. The rule it produced — **an event that cannot
-be folded into state without recomputation is an incomplete event** — now applies to all 35.
+be folded into state without recomputation is an incomplete event** — now applies to all 36.
 
 ## Dashboard
 

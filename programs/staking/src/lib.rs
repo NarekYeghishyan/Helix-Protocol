@@ -42,6 +42,12 @@ pub mod helix_staking {
         instructions::claim::claim(ctx)
     }
 
+    /// Reclaims the rent of a position that holds nothing. Refused while any
+    /// principal, weight or unclaimed reward remains.
+    pub fn close_position(ctx: Context<ClosePosition>) -> Result<()> {
+        instructions::close_position::close_position(ctx)
+    }
+
     // ------------------------------------------------------------------ admin
 
     /// Tops up the reward vault. Permissionless.

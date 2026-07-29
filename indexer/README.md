@@ -150,7 +150,7 @@ off chain. That is a second implementation of the weight table: correct today,
 silently wrong the day the table changes. The event now carries `weighted_amount`.
 
 The general rule it produced: **an event that cannot be folded into state without
-recomputation is an incomplete event.** Applied across all 35, this is the only
+recomputation is an incomplete event.** Applied across all 36, this is the only
 one that failed it.
 
 A second, found by a test bug rather than by design: `treasury_balance` returned 0
@@ -163,7 +163,7 @@ are now recorded in `orphaned`.
 
 | Module | Responsibility |
 |---|---|
-| [`event.rs`](./src/event.rs) | The 35 event types, and decoding one from its wire form |
+| [`event.rs`](./src/event.rs) | The 36 event types, and decoding one from its wire form |
 | [`logs.rs`](./src/logs.rs) | Attributing `Program data:` lines to the invocation that emitted them |
 | [`projection.rs`](./src/projection.rs) | Folding events into queryable state, exactly once each |
 | [`source.rs`](./src/source.rs) | The `LogSource` trait, and a scripted source that can roll a slot back on demand |

@@ -44,7 +44,9 @@ pub struct Unstaked {
     pub position: Pubkey,
     pub owner: Pubkey,
     pub amount: u64,
-    /// Principal left in the position; zero means it was closed.
+    /// Principal left in the position. Zero means it is fully exited, not that
+    /// the account is gone — reclaiming the rent is a separate, optional step
+    /// that emits [`PositionClosed`].
     pub remaining: u64,
     /// Vote weight left in the position, so a consumer never has to recompute
     /// it from `remaining` and the tier.
@@ -56,6 +58,26 @@ pub struct Unstaked {
     /// changes, and then disagrees silently. An event that cannot be folded into
     /// state without recomputation is an incomplete event.
     pub weighted_amount: u64,
+    pub timestamp: i64,
+}
+
+/// A fully exited position's account was deallocated and its rent returned.
+///
+/// Carries `position_id` because the account it describes no longer exists —
+/// a consumer that wanted the id would otherwise have to have retained the
+/// `Staked` event that opened it. This is the same rule `Unstaked` produced:
+/// an event that cannot be folded into state without going elsewhere for a
+/// field is an incomplete event.
+///
+/// Emphatically **not** a decrement of `pool.position_count`, which counts
+/// positions ever opened — see [`crate::instructions::close_position`].
+#[event]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PositionClosed {
+    pub pool: Pubkey,
+    pub position: Pubkey,
+    pub owner: Pubkey,
+    pub position_id: u64,
     pub timestamp: i64,
 }
 

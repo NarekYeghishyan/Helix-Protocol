@@ -80,10 +80,14 @@ pub struct Stake<'info> {
 pub fn stake(ctx: Context<Stake>, position_id: u64, amount: u64, tier: LockTier) -> Result<()> {
     require!(!ctx.accounts.pool.paused, StakingError::DepositsPaused);
     require!(amount >= MIN_STAKE_AMOUNT, StakingError::BelowMinimumStake);
+    // Not `MathOverflow`, which this reported until `close_position` gave the
+    // check a second way to be hit. Passing a stale id is an ordinary race
+    // between two of your own transactions, and telling the user their
+    // arithmetic overflowed sends them looking in the wrong place entirely.
     require_eq!(
         position_id,
         ctx.accounts.pool.position_count,
-        StakingError::MathOverflow
+        StakingError::UnexpectedPositionId
     );
 
     let now = Clock::get()?.unix_timestamp;

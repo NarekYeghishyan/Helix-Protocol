@@ -202,3 +202,131 @@ fn a_front_runner_cannot_take_the_pool_once_bootstrapped() {
     let p: Pool = env.anchor_account(&pool);
     assert_eq!(p.authority, executor, "authority must be unchanged");
 }
+
+// ===========================================================================
+// INVARIANTS.md §5.8 — the post-deploy authority audit
+// ===========================================================================
+
+/// Reads the four authorities out of the accounts the bootstrap wrote.
+///
+/// This is the part an operator does with an RPC connection. `helix-ops` has no
+/// network by design, so the reading is the caller's job and the *judging* is
+/// the crate's — which is what lets the same `audit` run here, against accounts
+/// written by the real programs, and against devnet later.
+fn observe(env: &TestEnv, mint: &Pubkey) -> helix_ops::ObservedAuthorities {
+    let (pool, _) = pda::pool(mint, mint);
+    let (realm, _) = pda::realm(&pool);
+    let (treasury, _) = pda::treasury(mint);
+
+    let p: Pool = env.anchor_account(&pool);
+    let r: helix_governance::state::Realm = env.anchor_account(&realm);
+    let t: Treasury = env.anchor_account(&treasury);
+
+    helix_ops::ObservedAuthorities {
+        pool_authority: p.authority,
+        realm_authority: r.authority,
+        treasury_spender: t.governance_executor,
+        guardian: r.guardian,
+    }
+}
+
+#[test]
+fn the_audit_confirms_the_deployed_system_matches_the_plan() {
+    let mut env = TestEnv::new();
+    let mint_authority = Keypair::new();
+    let mint = env
+        .create_mint(DECIMALS, &mint_authority.pubkey(), None)
+        .pubkey();
+    let guardian = Keypair::new().pubkey();
+
+    let plan = bootstrap_plan(&env, &mint, &guardian);
+    env.send(&plan.instructions, &[]);
+
+    let discrepancies = helix_ops::audit(&plan, &observe(&env, &mint));
+    assert!(
+        discrepancies.is_empty(),
+        "clean bootstrap reported as wrong: {:?}",
+        discrepancies
+    );
+}
+
+#[test]
+fn the_audit_catches_an_initialiser_that_was_front_run() {
+    // §5.8 used to read "initialisers cannot install an unintended authority",
+    // which is not true of the programs and cannot be made true — they are
+    // first-caller-wins, and that is F-1. What is true is that an unintended
+    // authority is *detectable before anything of value is deposited*, and this
+    // is the test of that.
+    let mut env = TestEnv::new();
+    let mint_authority = Keypair::new();
+    let mint = env
+        .create_mint(DECIMALS, &mint_authority.pubkey(), None)
+        .pubkey();
+    let guardian = Keypair::new().pubkey();
+    let plan = bootstrap_plan(&env, &mint, &guardian);
+
+    // The attacker gets there first, naming themselves pool authority.
+    let attacker = Keypair::new();
+    env.svm
+        .airdrop(
+            &attacker.pubkey(),
+            100 * solana_native_token::LAMPORTS_PER_SOL,
+        )
+        .unwrap();
+
+    let (pool, _) = pda::pool(&mint, &mint);
+    let (pool_vault_authority, _) = pda::vault_authority(&pool);
+    let (stake_vault, _) = pda::stake_vault(&pool);
+    let (reward_vault, _) = pda::reward_vault(&pool);
+    env.send(
+        &[TestEnv::ix(
+            helix_staking::ID,
+            helix_staking::accounts::InitializePool {
+                payer: attacker.pubkey(),
+                authority: attacker.pubkey(),
+                pool,
+                vault_authority: pool_vault_authority,
+                stake_mint: mint,
+                reward_mint: mint,
+                stake_vault,
+                reward_vault,
+                token_program: token_2022::ID,
+                system_program: anchor_lang::system_program::ID,
+            },
+            helix_staking::instruction::InitializePool {},
+        )],
+        &[&attacker],
+    );
+
+    // The bootstrap now fails as a whole — the first line of defence, and the
+    // reason the three initialisers share one transaction. Nothing lands
+    // half-built.
+    assert!(
+        env.try_send(&plan.instructions, &[]).is_err(),
+        "the bootstrap succeeded over a pool someone else had already taken"
+    );
+
+    // An operator who reacts by re-running without the pool instruction, or who
+    // simply proceeds, is the case this catches. The realm and treasury do not
+    // exist yet, so audit what does.
+    let p: Pool = env.anchor_account(&pool);
+    let observed = helix_ops::ObservedAuthorities {
+        pool_authority: p.authority,
+        realm_authority: plan.addresses.executor,
+        treasury_spender: plan.addresses.executor,
+        guardian,
+    };
+
+    let discrepancies = helix_ops::audit(&plan, &observed);
+    assert_eq!(discrepancies.len(), 1);
+    assert_eq!(discrepancies[0].what, "pool authority");
+    assert_eq!(discrepancies[0].found, attacker.pubkey());
+    assert_eq!(discrepancies[0].expected, plan.addresses.executor);
+
+    // And the message is one an operator can act on without reading this test.
+    let rendered = discrepancies[0].to_string();
+    assert!(
+        rendered.contains(&attacker.pubkey().to_string()),
+        "{rendered}"
+    );
+}

@@ -10,7 +10,7 @@ is bounded by the honesty of its coverage claims.
 ```bash
 anchor build                                                  # required first — the
                                                               # runtime tests load .so files
-cargo test --workspace                                        # 192 tests: unit + doc + runtime
+cargo test --workspace                                        # 212 tests: unit + doc + runtime
 cargo test -p helix-staking --lib                             # one program's unit tests
 cargo test -p helix-staking --lib -- --nocapture rounding     # one test, with output
 
@@ -21,16 +21,28 @@ anchor build 2>&1 | tee build.log
 grep -i "stack offset" build.log     # MUST be empty — see below
 ```
 
-### The one non-obvious step
+### Two non-obvious steps
 
-`anchor build` reports SBF stack-frame overflows as `Error:` and **exits 0 anyway**. A
-program that overflows its 4KB frame may corrupt memory at runtime, so the exit code is
-actively misleading. Always grep the log; CI does the same rather than trusting the
-status code. See [F-3](./SECURITY-ASSESSMENT.md#f-3--sbf-stack-frame-overflow).
+**`anchor build` exits 0 on a stack overflow.** It reports SBF stack-frame overflows as
+`Error:` and returns success anyway. A program that overflows its 4KB frame may corrupt
+memory at runtime, so the exit code is actively misleading. Always grep the log; CI does
+the same rather than trusting the status code. See
+[F-3](./SECURITY-ASSESSMENT.md#f-3--sbf-stack-frame-overflow).
+
+**`cargo test` does not rebuild the programs.** The runtime tests load `.so` files from
+`target/deploy`, and nothing checks that those artifacts came from the source you are
+looking at. Edit a program, run `cargo test`, and you are testing the previous build.
+
+That is not a hypothetical. It happened here while mutation-testing `close_position`:
+the mutated build stayed in `target/deploy` after the source was reverted, and the next
+full run produced six failures in unrelated tests with `Custom(2000)` — `ConstraintSeeds`,
+which points at the account list rather than at the actual cause. The rule is to rebuild
+before every runtime run, and to distrust a sudden cluster of failures that share an error
+code you did not expect.
 
 ## What is covered
 
-**109 unit tests** over pure functions and state machines, and **83 runtime tests** against
+**117 unit tests** over pure functions and state machines, and **95 runtime tests** against
 the real BPF programs.
 
 ### Unit tests
@@ -51,7 +63,8 @@ the real BPF programs.
 | Log attribution | 10 | CPI depth tracking, foreign programs ignored, truncation and undecodable payloads reported, compute lines not mistaken for frame exits |
 | Projection | 6 | Idempotent replay, identical events in one transaction kept distinct, orphan tracking, APR undefined on an empty pool |
 | Ingestion | 9 | Reorg above the finality watermark reverted and replaced, contradiction below it refused, paged backfill equals a single pass, cursor resumption, anomalies surfaced |
-| Deployment plan | 6 | The payer ends up controlling nothing, addresses derive from the mint alone, the transaction fits a packet, the JSON form keeps signer and writable flags |
+| Deployment plan | 9 | The payer ends up controlling nothing, addresses derive from the mint alone, the transaction fits a packet, the JSON form keeps signer and writable flags, and the post-deploy audit names every authority that drifted — including the guardian |
+| Position closing | 3 | An empty position is closable and a weight-bearing one is not; settling an empty position is a no-op at any accumulator value, which is why `close_position` needs no settlement step |
 | Read API | 6 | The two finality views differ and each says which it is, a u64 past 2^53 survives a JSON round trip, undefined APR is null, small shares do not round away |
 
 ### Runtime tests
@@ -63,7 +76,9 @@ the real BPF programs.
 | `staking_lifecycle.rs` | 12 | §1.2, §1.4, §6.1, §6.2, §6.4, §6.5 — funding, rate solvency, accrual, claim, partial and full unstake, pause semantics, cross-owner claim refused |
 | `governance_e2e.rs` | 15 | §4.1–4.7, §4.11–4.13, §5.1 — the authority chain plus one negative test per threat-model attack |
 | `vesting_e2e.rs` | 12 | §1.5, §1.6, §7.5, §7.7–7.9 — grant → cliff → claim → revoke, forward-only revocation, committed balance protection, executor migration |
-| `bootstrap_atomicity.rs` | 4 | F-1's mitigation: the bootstrap fits one transaction (748 B / 17 accounts, asserted against the 1232-byte limit), and re-initialisation fails afterwards |
+| `bootstrap_atomicity.rs` | 6 | F-1's mitigation: the bootstrap fits one transaction (748 B / 17 accounts, asserted against the 1232-byte limit), re-initialisation fails afterwards, and §5.8 — the post-deploy audit run against a clean system *and* against one whose pool really was front-run |
+| `authority_invariants.rs` | 4 | §5.3, §5.5 — the mint's authorities are the PDA and no key present at creation can mint; every stored bump is canonical, and a non-canonical derivation of the vault authority is refused |
+| `position_close.rs` | 6 | F-7 and §5.11 — rent returns to the owner, principal and unclaimed rewards each block the close, a closed id is never reused, and a voter cannot exit under a live proposal |
 | `token_admin_e2e.rs` | 8 | §5.2, §5.4, §5.9, §5.10 — the token-manager admin handover in real deployment order, and that governance then holds every admin power |
 | `compute_budget.rs` | 5 | §6.3 — compute measured across a 64× sweep in staker and voter count, plus a budget ceiling on every hot-path instruction |
 | `fuzz_invariants.rs` | 7 | §1.1–1.4, §3.1–3.2, §4.1, §4.3, §4.5–4.6 asserted after every operation of 22 random sequences, plus the tests that keep the campaign honest |
@@ -345,6 +360,30 @@ replaying_a_transaction_double_counts_nothing                        ok  <-- sti
 Same shape again: the three that stay green are single-program flows, where the innermost
 program *is* the outermost and the two rules are indistinguishable. That is the whole
 argument for testing the nested case separately.
+
+`close_position` was checked the same way, and this one is worth showing because the
+mutation is the implementation most people would write. Decrementing `pool.position_count`
+on close — the counter reads like "positions currently open", so treating a close as a
+decrement looks obviously right:
+
+```text
+closing_does_not_free_the_position_id_for_reuse  FAILED
+  close decremented the electorate boundary
+  left: 0   right: 1
+```
+
+Then, with that first assertion disabled to see whether the second half stands on its own:
+
+```text
+closing_does_not_free_the_position_id_for_reuse  FAILED
+  called `unwrap_err()` on an `Ok` value
+```
+
+That `Ok` is the finding. Re-staking at the closed position's id **succeeded** — the
+address was reoccupied, and the new position sits beneath a `position_count_snapshot` taken
+before it existed, which is [F-10](./SECURITY-ASSESSMENT.md#f-10--post-snapshot-weight-could-vote)
+reopened by a change about reclaiming rent. Two assertions, each catching it independently,
+which is what you want for a property this indirect.
 
 ## CI
 

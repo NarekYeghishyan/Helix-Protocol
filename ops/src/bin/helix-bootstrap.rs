@@ -16,16 +16,25 @@
 
 use anchor_lang::prelude::Pubkey;
 use helix_governance::instructions::realm::RealmParams;
-use helix_ops::{plan, to_json, BootstrapConfig};
+use helix_ops::{audit, plan, to_json, BootstrapConfig, ObservedAuthorities};
 use std::str::FromStr as _;
 
 const USAGE: &str = "\
-helix-bootstrap — plan the atomic bootstrap
+helix-bootstrap — plan the atomic bootstrap, and verify it afterwards
 
     --payer     <PUBKEY>   funds account rent; ends up controlling nothing
     --mint      <PUBKEY>   the HLX mint, which must already exist
     --guardian  <PUBKEY>   may only veto; intended to be a multisig
     --json                 emit the instructions instead of the report
+
+    --verify               audit a system that has already been bootstrapped
+                           against the plan that should have created it, and
+                           exit non-zero if any authority differs. Reads the
+                           four observed values from:
+                             --observed-pool-authority   <PUBKEY>
+                             --observed-realm-authority  <PUBKEY>
+                             --observed-treasury-spender <PUBKEY>
+                             --observed-guardian         <PUBKEY>
 
 Realm parameters default to the values in docs/RUNBOOK.md and can be set with
 --quorum-bps, --approval-bps, --voting-period, --timelock-delay and
@@ -100,6 +109,46 @@ fn main() {
         }
     }
 
+    // Verification is a separate mode because it answers a different question.
+    // Everything above is "what will happen"; this is "what did", and the two
+    // must not be inferred from each other — the whole point of the check is
+    // that the plan may not be what landed.
+    if args.iter().any(|a| a == "--verify") {
+        let observed = ObservedAuthorities {
+            pool_authority: key("--observed-pool-authority"),
+            realm_authority: key("--observed-realm-authority"),
+            treasury_spender: key("--observed-treasury-spender"),
+            guardian: key("--observed-guardian"),
+        };
+
+        let discrepancies = audit(&plan, &observed);
+        if discrepancies.is_empty() {
+            println!(
+                "Every authority is the executor PDA {}.",
+                plan.addresses.executor
+            );
+            println!("The system is governance-controlled as planned.");
+            return;
+        }
+
+        eprintln!("AUTHORITY MISMATCH — do not deposit anything into this system.\n");
+        for d in &discrepancies {
+            eprintln!("  {d}");
+        }
+        let subject = if discrepancies.len() == 1 {
+            "1 authority differs".to_string()
+        } else {
+            format!("{} authorities differ", discrepancies.len())
+        };
+        eprintln!(
+            "\n{subject} from the plan. This is what F-1 looks like when it happened:\n\
+             an initialiser was front-run, or the bootstrap was re-run by hand and an\n\
+             account was wrong. Neither is recoverable in place — the PDAs are seeded\n\
+             by the mint, so the fix is a new mint."
+        );
+        std::process::exit(1);
+    }
+
     if args.iter().any(|a| a == "--json") {
         println!(
             "{}",
@@ -148,8 +197,8 @@ fn main() {
     println!("  * register the first minter, then hand the token-manager admin to");
     println!("    governance (F-9): only an admin can register a minter, so the role");
     println!("    has to start as a human key");
-    println!("  * verify every authority on chain afterwards; the checklist assumes");
-    println!("    nothing this tool printed actually happened");
+    println!("  * verify every authority on chain afterwards with --verify; the");
+    println!("    checklist assumes nothing this tool printed actually happened");
 
     if size > 1232 {
         fail("\nthe transaction exceeds the packet limit and cannot be sent atomically");

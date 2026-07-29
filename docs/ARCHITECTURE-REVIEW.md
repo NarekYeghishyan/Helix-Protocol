@@ -231,8 +231,15 @@ are distinguishable. See [`indexer/README.md`](../indexer/README.md).
 name or symbol, needing the metadata extension CPI plus a realloc for variable-length
 fields. Cosmetic for the protocol, immediately visible in every wallet.
 
-**W-7 — `Position` accounts are never closed.** Rent is not reclaimed on full exit. No
-security impact; a real cost at scale and a papercut for users.
+**W-7 — ~~`Position` accounts are never closed.~~ Fixed.** Rent was not reclaimed on full
+exit — no security impact, a real cost at scale and a papercut for users. `close_position`
+now reclaims it, and the fix is more interesting than the weakness was: the natural
+implementation decrements `pool.position_count`, which is a PDA seed and the electorate
+boundary governance snapshots, and doing so reopens
+[F-10](./SECURITY-ASSESSMENT.md#f-10--post-snapshot-weight-could-vote). The general lesson
+is in the review questions in
+[AUDIT-READINESS.md](./AUDIT-READINESS.md#3-where-the-findings-came-from): for every
+monotonic counter, ask what *else* reads it.
 
 ### Scalability considerations
 

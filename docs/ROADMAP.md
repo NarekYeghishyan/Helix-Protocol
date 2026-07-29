@@ -20,7 +20,7 @@ says how much to trust each one.
 | 0 | Toolchain, workspace, CI | ✅ Done |
 | 1 | Four programs, unit-tested | ✅ Done |
 | 2 | Integration tests against a validator | ✅ Done — 74 runtime tests; found and fixed F-8 |
-| 3 | Devnet deployment + verifiable builds | ◐ Bootstrap measured and planned by a tested tool, F-9 fixed; the deploy itself is blocked on devnet funding — **highest priority** |
+| 3 | Devnet deployment + verifiable builds | ◐ Bootstrap measured, planned and *verifiable after the fact*; F-9 fixed; the deploy itself is blocked on devnet funding — **highest priority** |
 | 4 | Indexer + analytics API | ◐ Decode, ingestion and the read API built and tested; the RPC client and storage binding are the remainder |
 | 5 | Dashboard + wallet integration | ◐ Analytics views, wallet connection and cluster switching built; transaction flows need a deployment |
 | 6 | Fuzzing + external audit prep | ✅ Done — compute benchmarked, fuzzing found F-10, audit scoped in [AUDIT-READINESS.md](./AUDIT-READINESS.md) |
@@ -106,6 +106,7 @@ phase.
 | 3.3 | Verifiable builds (`solana-verify`), so deployed bytecode reproduces from source | 0.5d | ⬜ |
 | 3.4 | Upgrade authority to a 3-of-5 Squads multisig | 0.5d | ⬜ |
 | 3.5 | **Fix F-9** — the whole token-manager admin surface, so the last authority can migrate | 0.5d | ✅ Done |
+| 3.6 | **Post-deploy authority audit** — `--verify` as a command with an exit code, not a checklist line | 0.5d | ✅ Done — closes invariant §5.8 |
 
 3.0 turned a recommendation into a fact and improved the design. Because
 `initialize_pool` and `initialize_treasury` take their privileged party as an argument,
@@ -136,6 +137,16 @@ It does not submit. `solana-rpc-client` is at 4.2.0-rc while this workspace reso
 Solana crates at 3.x, and the graph already carries eight duplicated `solana-*` crates;
 adding a second major version of the SDK to send one transaction is the trade that ruled
 out Trident. `--json` emits the instructions for whatever client the operator already has.
+
+**3.6 is the half that was missing, and it is the half that answers a different question.**
+Everything in 3.2 is *what will happen*. `--verify` is *what did* — it takes the four
+authorities as read off the chain and names each one that is not what the plan said, exit
+code 1. (1) and (2) in F-1 remove the window and the vulnerability; neither tells an
+operator whether what they actually did worked, and a mitigation you cannot confirm
+afterwards is an assumption. Invariant §5.8 used to assert "initialisers cannot install an
+unintended authority", which is simply false of these programs; it now asserts the thing
+that is true and can fail, and the suite runs it against a system where the pool really
+was front-run.
 
 **Cost note.** The four programs total 1.43 MB, ~9.94 SOL of rent-exemption, and
 deployment needs roughly double that at peak for the buffers. Devnet's CLI airdrop is
@@ -351,7 +362,15 @@ Named so that absence reads as a decision rather than an oversight:
 
 | Item | Impact | When |
 |---|---|---|
-| No integration tests | Cross-program wiring unverified at runtime | Phase 2 |
+| ~~No integration tests~~ | ~~Cross-program wiring unverified at runtime~~ | Done — Phase 2, 95 runtime tests |
+| ~~`Position` accounts are never closed~~ | ~~Rent is not reclaimed on full exit~~ | Done — `close_position`, [F-7](./SECURITY-ASSESSMENT.md#f-7--position-accounts-never-closed) |
 | Token metadata not initialised | Mint has no on-chain name/symbol; needs the Token-2022 metadata extension CPI plus a realloc for variable-length fields | Phase 3 |
-| `Position` accounts are never closed | Rent is not reclaimed on full exit | Phase 2 |
 | Single reward mint per pool | Multi-reward pools need a per-reward accumulator | Deferred; no demand |
+
+The `Position` row is worth a second look before it is forgotten, because the fix was not
+the boring one it looked like. Reclaiming the rent means deallocating an account whose
+address is seeded by `pool.position_count` — the same counter governance snapshots to
+decide who was in the electorate. The obvious implementation decrements it and thereby
+reopens [F-10](./SECURITY-ASSESSMENT.md#f-10--post-snapshot-weight-could-vote), a High that
+a previous phase had closed. Two items on a technical-debt list can interact; nothing on
+the list says which.

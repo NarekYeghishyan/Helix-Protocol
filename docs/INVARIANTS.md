@@ -4,8 +4,9 @@ Properties that must hold after **every** instruction, in every state.
 
 Each row names the test that asserts it and whether that test **exists yet**. The status
 column is the honest part of this document: most aggregate invariants can only be checked
-against real accounts, so they are unreachable by unit tests and currently unverified.
-An invariant with no test is a design intention, not a guarantee.
+against real accounts, so they are unreachable by unit tests and had to wait for a runtime
+suite. An invariant with no test is a design intention, not a guarantee — and an invariant
+whose test does not exist under the name written beside it is worse than either.
 
 | | Meaning |
 |---|---|
@@ -15,7 +16,7 @@ An invariant with no test is a design intention, not a guarantee.
 
 Notation: `Σ` sums over all accounts of that type belonging to the pool/realm.
 
-**Current totals across 57 invariants: 54 ✅ · 0 ◐ · 3 ⬜.**
+**Current totals across 58 invariants: 58 ✅ · 0 ◐ · 0 ⬜.**
 
 Every user-facing flow is now exercised at runtime against the real BPF programs: staking
 deposit and withdrawal, reward accrual and claim, the full governance lifecycle, treasury
@@ -58,8 +59,25 @@ writes. §4.13 exists to keep it fixed.
 That is the argument for the ◐ column being honest rather than optimistic: two of the three
 rows that carried it turned out to be hiding something.
 
-What remains ⬜ is the deployment-time invariant §5.8 and two aggregate properties that
-need many accounts to be meaningful — Phase 3 and Phase 6 respectively.
+**The last three ⬜ rows had a worse problem than being untested.** §5.3 and §5.5 each
+named a test — `token_manager::mint_authority_is_pda`, `*::canonical_bumps` — that did not
+exist. A name in the test column reads as verified to anyone skimming, so an empty cell
+would have been more honest than what was there. Both tests now exist, in
+[`authority_invariants.rs`](../tests/integration/tests/authority_invariants.rs), and both
+had to be runtime tests: §5.3 is a claim about a Token-2022 mint account after an
+instruction ran, and §5.5 is a claim about what the deployed program does with an address
+it is handed — which is exactly what a unit test replaces with a function call.
+
+**§5.8 was not merely untested, it was false.** It read "initialisers cannot install an
+unintended authority". They can: they are first-caller-wins, which is
+[F-1](./SECURITY-ASSESSMENT.md#f-1--initialisers-are-front-runnable), and no amount of care
+in the deployment tooling changes that. The invariant has been restated as what is actually
+true and actually checkable — an unintended authority is *detectable before anything of
+value is deposited* — and [`helix-bootstrap --verify`](../ops) is that check, exercised by
+the suite against a system where the pool really was front-run.
+
+An invariant that cannot fail is not an invariant. That one had been sitting in the table
+for six phases.
 
 ---
 
@@ -156,14 +174,31 @@ argument about the code as written rather than a property of the deployed progra
 |---|-----------|------|--------|
 | 5.1 | Treasury funds move only under the governance executor's signature | `treasury_rejects_a_spend_that_is_not_from_governance`, `a_passed_proposal_moves_treasury_funds` | ✅ |
 | 5.2 | HLX is minted only by a registered minter, within its epoch cap | `governance_can_revoke_a_minter` (runtime), `accrues_within_cap` | ✅ |
-| 5.3 | No non-PDA address holds mint authority after `initialize_token` | `token_manager::mint_authority_is_pda` | ⬜ P2 |
+| 5.3 | No non-PDA address holds mint authority after `initialize_token` | `mint_authority_is_pda`, `no_key_present_at_creation_can_mint` | ✅ |
 | 5.4 | Admin transfer requires both `propose` and `accept` | `governance_can_accept_the_token_manager_admin` | ✅ |
 | 5.9 | A superseded admin retains no powers | `the_old_admin_loses_its_powers_after_handover` | ✅ |
 | 5.10 | Governance holds the *whole* admin surface, not just the role | `governance_can_pause_issuance_once_it_is_admin`, `governance_can_register_a_new_minter`, `governance_can_revoke_a_minter` | ✅ |
-| 5.5 | Every PDA is derived with a stored, verified bump | `*::canonical_bumps` | ⬜ P2 |
+| 5.5 | Every PDA is derived with a stored, verified bump | `canonical_bumps`, `a_non_canonical_derivation_is_refused` | ✅ |
 | 5.6 | An epoch cap grants no accumulated allowance for idle epochs | `skipping_epochs_does_not_accumulate_allowance` | ✅ |
 | 5.7 | A treasury spend cap likewise does not accumulate | `idle_epochs_do_not_accumulate_budget` | ✅ |
-| 5.8 | Initialisers cannot install an unintended authority | *(none — see [F-1](./SECURITY-ASSESSMENT.md#f-1--initialisers-are-front-runnable))* | ⬜ P3 |
+| 5.8 | An unintended authority installed at bootstrap is detected before anything of value is deposited | `the_audit_confirms_the_deployed_system_matches_the_plan`, `the_audit_catches_an_initialiser_that_was_front_run` | ✅ |
+| 5.11 | Closing a position never frees its id, so the electorate boundary cannot move | `closing_does_not_free_the_position_id_for_reuse` | ✅ |
+
+5.5 has two halves, and the second is the one about the deployed program. Storing a
+canonical bump is worth nothing unless the program *checks* the address it is handed
+against it, so `a_non_canonical_derivation_is_refused` builds a real second PDA — same
+seeds, same program, a lower bump that still lands off-curve — and passes it as `unstake`'s
+`vault_authority`. That account is an `UncheckedAccount`: never deserialised, never
+owner-checked, and its only job is to sign the transfer out of the stake vault. The seeds
+constraint is the entire thing standing between an attacker and a forged signer for the
+vault, which is why it gets a test rather than an argument.
+
+5.11 is the constraint `close_position` had to respect. `pool.position_count` seeds every
+position PDA *and* is the electorate boundary §4.13 snapshots, so decrementing it on close
+would let a new position land at the closed one's address and beneath an existing snapshot
+— reopening F-10. The obvious implementation does decrement it, because the counter reads
+like "positions currently open". Mutation-testing confirmed both halves of the test catch
+it: with the decrement, re-staking at the freed id succeeds.
 
 ## 6. Liveness
 
@@ -218,7 +253,7 @@ a 31-CU residual it bounds but does not explain.
 
 ```bash
 anchor build 2>&1 | tee build.log && grep -i "stack offset" build.log  # must be empty
-cargo test --workspace          # 192 tests: unit + doc + runtime
+cargo test --workspace          # 212 tests: unit + doc + runtime
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 

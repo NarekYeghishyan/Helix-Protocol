@@ -44,6 +44,13 @@ different tiers; each is its own account, seeded
 monotonic counter — fixed-length seeds, nothing caller-controlled to craft a collision
 from.
 
+`pool.position_count` means **positions ever opened**, and nothing else is safe. It is a
+PDA seed, and `helix-governance` snapshots it at activation as the electorate boundary, so
+an id that could be recycled would let a position created after a proposal opened vote on
+it. `close_position` therefore reclaims rent without touching the counter — see
+[F-7](../../docs/SECURITY-ASSESSMENT.md#f-7--position-accounts-never-closed) for what the
+obvious implementation breaks.
+
 ## Token-2022 transfer fees
 
 Every deposit credits the **observed vault balance delta**, never the `amount`
@@ -81,6 +88,7 @@ transfer error for whoever claims last.
 | `stake` | staker | Credits the vault delta; blocked by pause |
 | `unstake` | position owner | Requires `now >= lock_end`; **not** blocked by pause |
 | `claim` | position owner | Always available |
+| `close_position` | position owner | Reclaims rent; refused unless principal, weight and unclaimed rewards are all zero |
 | `fund_rewards` | anyone | Topping up can only help stakers |
 | `set_reward_rate` | pool authority | Solvency-checked |
 | `set_paused` | pool authority | Deposits only |

@@ -268,6 +268,85 @@ pub fn plan(config: &BootstrapConfig) -> Plan {
     }
 }
 
+/// The same four authorities, as they actually stand on chain.
+///
+/// Read by whoever holds the RPC connection and passed in, rather than fetched
+/// here — the crate deliberately has no network. That split is what lets the
+/// runtime suite audit accounts written by the real programs using the same
+/// function an operator runs against devnet.
+#[derive(Clone, Copy, Debug)]
+pub struct ObservedAuthorities {
+    /// `Pool.authority`.
+    pub pool_authority: Pubkey,
+    /// `Realm.authority`.
+    pub realm_authority: Pubkey,
+    /// `Treasury.governance_executor`.
+    pub treasury_spender: Pubkey,
+    /// `Realm.guardian`.
+    pub guardian: Pubkey,
+}
+
+/// One authority that is not what the plan said it would be.
+#[derive(Clone, Copy, Debug, Serialize)]
+pub struct Discrepancy {
+    pub what: &'static str,
+    #[serde(with = "as_string")]
+    pub expected: Pubkey,
+    #[serde(with = "as_string")]
+    pub found: Pubkey,
+}
+
+impl std::fmt::Display for Discrepancy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}: expected {}, found {}",
+            self.what, self.expected, self.found
+        )
+    }
+}
+
+/// Compares the deployed system against the plan that was supposed to create it.
+///
+/// This is the other half of [`plan`], and it exists because of what
+/// [F-1](../../docs/SECURITY-ASSESSMENT.md) actually says. The initialisers are
+/// first-caller-wins; no amount of care in this crate makes them otherwise. The
+/// atomic transaction removes the window, and this removes the assumption that
+/// it worked — the two together are the control, and only the second one holds
+/// if someone got there first.
+///
+/// Empty means every authority is the executor PDA. Run it before anything of
+/// value is deposited, because afterwards the answer stops being actionable.
+pub fn audit(plan: &Plan, observed: &ObservedAuthorities) -> Vec<Discrepancy> {
+    let expected = plan.privileged_parties();
+    [
+        (
+            "pool authority",
+            expected.pool_authority,
+            observed.pool_authority,
+        ),
+        (
+            "realm authority",
+            expected.realm_authority,
+            observed.realm_authority,
+        ),
+        (
+            "treasury spender",
+            expected.treasury_spender,
+            observed.treasury_spender,
+        ),
+        ("guardian", expected.guardian, observed.guardian),
+    ]
+    .into_iter()
+    .filter(|(_, expected, found)| expected != found)
+    .map(|(what, expected, found)| Discrepancy {
+        what,
+        expected,
+        found,
+    })
+    .collect()
+}
+
 fn instruction<A: ToAccountMetas, D: InstructionData>(
     program_id: Pubkey,
     accounts: A,
@@ -429,6 +508,57 @@ mod tests {
         assert_eq!(base64_encode(b"foob"), "Zm9vYg==");
         assert_eq!(base64_encode(b"fooba"), "Zm9vYmE=");
         assert_eq!(base64_encode(b"foobar"), "Zm9vYmFy");
+    }
+
+    fn as_planned(plan: &Plan) -> ObservedAuthorities {
+        let p = plan.privileged_parties();
+        ObservedAuthorities {
+            pool_authority: p.pool_authority,
+            realm_authority: p.realm_authority,
+            treasury_spender: p.treasury_spender,
+            guardian: p.guardian,
+        }
+    }
+
+    #[test]
+    fn the_audit_is_silent_when_the_chain_matches_the_plan() {
+        let plan = plan(&config());
+        assert!(audit(&plan, &as_planned(&plan)).is_empty());
+    }
+
+    #[test]
+    fn the_audit_names_every_authority_that_drifted() {
+        // Front-running installs an attacker where the executor should be. The
+        // audit has to say *which* one, because "the bootstrap looks wrong" is
+        // not something an operator can act on at the moment it matters.
+        let plan = plan(&config());
+        let attacker = Pubkey::new_unique();
+
+        let mut observed = as_planned(&plan);
+        observed.pool_authority = attacker;
+        observed.treasury_spender = attacker;
+
+        let found = audit(&plan, &observed);
+        assert_eq!(found.len(), 2);
+        assert_eq!(found[0].what, "pool authority");
+        assert_eq!(found[0].found, attacker);
+        assert_eq!(found[0].expected, plan.addresses.executor);
+        assert_eq!(found[1].what, "treasury spender");
+    }
+
+    #[test]
+    fn a_swapped_guardian_is_a_discrepancy_too() {
+        // The guardian can only veto, so it is tempting to leave it out of the
+        // audit. A guardian an attacker controls can veto every proposal
+        // forever, which is not a drained treasury but is a dead protocol —
+        // F-6, and the reason it is checked here rather than eyeballed.
+        let plan = plan(&config());
+        let mut observed = as_planned(&plan);
+        observed.guardian = Pubkey::new_unique();
+
+        let found = audit(&plan, &observed);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].what, "guardian");
     }
 
     #[test]

@@ -224,6 +224,24 @@ impl Analytics {
                     .total_weighted
                     .saturating_sub(old_weighted.saturating_sub(e.weighted_amount));
             }
+            E::PositionClosed(e) => {
+                // Drop the row, because the account it modelled has been
+                // deallocated and `indexer_reconciliation.rs` compares this map
+                // to accounts that actually exist. Redelivery is handled where
+                // every other event handles it — the `(signature, log_index)`
+                // dedup above — not by making this arm tolerant of a missing
+                // row, which would also swallow the genuine partial-history
+                // case below.
+                //
+                // `position_count` is deliberately untouched, mirroring the
+                // program: it counts positions ever opened, and it is the
+                // electorate boundary governance snapshots at activation.
+                // Decrementing it here would make the indexer disagree with the
+                // chain about who was eligible to vote.
+                if self.positions.remove(&e.position).is_none() {
+                    self.orphaned.insert(id);
+                }
+            }
             E::RewardsClaimed(e) => {
                 match self.positions.get_mut(&e.position) {
                     Some(position) => {
@@ -432,9 +450,10 @@ impl Analytics {
 
     /// Live positions in a pool, largest first.
     ///
-    /// Fully withdrawn positions are excluded: the account still exists on chain
-    /// (nothing closes it — see the roadmap's technical debt), but a zero-weight
-    /// position is not a staker.
+    /// Fully withdrawn positions are excluded whether or not the owner has since
+    /// reclaimed the rent with `close_position`: a zero-balance position is not
+    /// a staker, and this must not depend on an optional second transaction that
+    /// may never be sent.
     pub fn staker_distribution(&self, pool: &Pubkey) -> Vec<(Pubkey, u64)> {
         let mut by_owner: BTreeMap<Pubkey, u64> = BTreeMap::new();
         for position in self.positions.values() {
@@ -612,6 +631,70 @@ mod tests {
         assert!(analytics.staker_distribution(&pool).is_empty());
         assert_eq!(analytics.pools[&pool].total_staked, 0);
         assert_eq!(analytics.pools[&pool].total_weighted, 0);
+    }
+
+    #[test]
+    fn closing_a_position_drops_the_row_but_not_the_electorate_boundary() {
+        let (pool, owner) = (Pubkey::new_unique(), Pubkey::new_unique());
+        let position = Pubkey::new_unique();
+        let mut analytics = Analytics::new();
+        analytics.apply_transaction("a", &[emitted(staked(pool, position, owner, 1_000), 0)]);
+        assert_eq!(analytics.pools[&pool].position_count, 1);
+
+        let closed = emitted(
+            HelixEvent::PositionClosed(helix_staking::events::PositionClosed {
+                pool,
+                position,
+                owner,
+                position_id: 0,
+                timestamp: 3,
+            }),
+            0,
+        );
+        // This fixture never emitted `PoolInitialized`, so the pool row is
+        // already flagged as built from partial history. Measure the delta.
+        let orphans_before = analytics.orphaned.len();
+        analytics.apply_transaction("b", std::slice::from_ref(&closed));
+
+        // The account is gone, so the row must be too — `indexer_reconciliation`
+        // compares this map against accounts that actually exist.
+        assert!(!analytics.positions.contains_key(&position));
+
+        // But `position_count` counts positions ever opened. It is what
+        // governance snapshots as the electorate boundary, so an indexer that
+        // decremented it would disagree with the chain about who could vote.
+        assert_eq!(analytics.pools[&pool].position_count, 1);
+
+        // Redelivery must be inert. This is the `(signature, log_index)` dedup
+        // doing the work rather than anything about `remove` — worth pinning,
+        // because the fold would otherwise record the second close as an orphan.
+        assert_eq!(
+            analytics.apply_transaction("b", std::slice::from_ref(&closed)),
+            0
+        );
+        assert_eq!(analytics.orphaned.len(), orphans_before);
+    }
+
+    #[test]
+    fn a_close_for_an_unseen_position_is_flagged_rather_than_ignored() {
+        // Backfill starting mid-history: the close arrives for a position this
+        // projection never saw opened. Silently succeeding would make partial
+        // history indistinguishable from complete history.
+        let mut analytics = Analytics::new();
+        analytics.apply_transaction(
+            "a",
+            &[emitted(
+                HelixEvent::PositionClosed(helix_staking::events::PositionClosed {
+                    pool: Pubkey::new_unique(),
+                    position: Pubkey::new_unique(),
+                    owner: Pubkey::new_unique(),
+                    position_id: 9,
+                    timestamp: 3,
+                }),
+                0,
+            )],
+        );
+        assert_eq!(analytics.orphaned.len(), 1);
     }
 
     #[test]

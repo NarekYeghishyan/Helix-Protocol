@@ -113,6 +113,7 @@ helix_events! {
         PoolInitialized:            helix_staking::events::PoolInitialized,
         Staked:                     helix_staking::events::Staked,
         Unstaked:                   helix_staking::events::Unstaked,
+        PositionClosed:             helix_staking::events::PositionClosed,
         RewardsClaimed:             helix_staking::events::RewardsClaimed,
         RewardsFunded:              helix_staking::events::RewardsFunded,
         RewardRateChanged:          helix_staking::events::RewardRateChanged,

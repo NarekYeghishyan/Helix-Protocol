@@ -118,10 +118,20 @@ proposals queued after it takes effect.
 
 *Close a position account, then re-derive and re-open it to replay accrued rewards.*
 
-**Defence.** Positions close via Anchor's `close` constraint, which zeroes the
-discriminator and drains lamports. Re-initialising the same PDA produces a fresh
-account with `reward_per_token_paid` snapped to the *current* accumulator, so no
-historical rewards are reachable.
+**Defence, in three layers.** The outer one is that the address cannot be reoccupied at
+all: `position_id` must equal `pool.position_count`, which only ever increases, and
+`close_position` deliberately does not decrement it. There is no id at which a closed
+position's PDA can be re-created.
+
+Behind that, `close_position` refuses while `pending_rewards` is non-zero, so there is
+never an unclaimed credit on an account being deallocated. And behind *that*, even if a
+PDA could be re-initialised, the fresh account snaps `reward_per_token_paid` to the
+*current* accumulator, so no historical rewards are reachable.
+
+The first layer is the one that took work, and it is the reason this entry is worth
+re-reading rather than skimming: the natural implementation of rent reclamation decrements
+the counter, which reopens [A2b](#a2b--post-snapshot-vote-stuffing) — not this attack.
+See [F-7](./SECURITY-ASSESSMENT.md#f-7--position-accounts-never-closed).
 
 ### A10 — PDA seed collision
 
@@ -130,7 +140,10 @@ historical rewards are reachable.
 **Defence.** All seeds are fixed-length or length-prefixed — no raw user strings are
 concatenated. `position_id` is a `u64` in little-endian bytes, not a user-supplied
 `Vec<u8>`. Bumps are stored at init and passed to `seeds`/`bump` on every subsequent
-use, so only canonical bumps are ever accepted (invariant 5.5).
+use, so only canonical bumps are ever accepted (invariant 5.5, now asserted at runtime:
+`canonical_bumps` checks every stored bump against `find_program_address`, and
+`a_non_canonical_derivation_is_refused` builds a real second PDA at a lower bump and
+confirms the program rejects it as `unstake`'s vault authority).
 
 ### A11 — Malicious proposal drains treasury in one shot
 

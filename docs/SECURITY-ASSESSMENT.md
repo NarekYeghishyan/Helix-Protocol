@@ -6,7 +6,7 @@ assessment, recommended mitigations.*
 **Scope:** the four programs under [`programs/`](../programs) at commit time.
 **Method:** manual review of every instruction's authority checks and arithmetic;
 invariant derivation ([INVARIANTS.md](./INVARIANTS.md)); adversarial modelling
-([THREAT-MODEL.md](./THREAT-MODEL.md)); 74 runtime tests against the real BPF programs;
+([THREAT-MODEL.md](./THREAT-MODEL.md)); 95 runtime tests against the real BPF programs;
 stateful fuzzing with the invariants as the oracle; `cargo clippy -D warnings`;
 `cargo audit`.
 **Not performed:** external audit, formal verification, any execution against a real
@@ -115,13 +115,13 @@ Severity = impact × likelihood, CVSS-style but judged rather than computed.
 
 | ID | Finding | Severity | Status |
 |---|---|---|---|
-| F-1 | Initialisers are front-runnable | **Medium** | Open — mitigated operationally |
+| F-1 | Initialisers are front-runnable | **Medium** | Open — mitigated operationally, and now **detected** by `helix-bootstrap --verify` |
 | F-2 | `unpaid_liability` used deposits as liability, making any non-zero reward rate unsettable | **High** | **Fixed** |
 | F-3 | SBF stack frame overflow in three `Accounts` structs | **High** | **Fixed** |
-| F-4 | Cross-program flows unverified at runtime | **High** | **Fixed** — 74 runtime tests; the two named gaps, staking withdrawal and vesting, are covered |
+| F-4 | Cross-program flows unverified at runtime | **High** | **Fixed** — 95 runtime tests; the two named gaps, staking withdrawal and vesting, are covered |
 | F-5 | Upgrade authority not migrated to governance | **Critical** (if deployed) | Open — Phase 7 |
 | F-6 | Guardian key compromise causes governance denial of service | **Low** | Accepted |
-| F-7 | `Position` accounts are never closed | **Informational** | Open |
+| F-7 | `Position` accounts are never closed | **Informational** | **Fixed** — and fixing it nearly reopened F-10 |
 | F-8 | Vesting, spend-cap and executor-migration instructions are unreachable | **Medium** | **Fixed** — found by attempting to test them |
 | F-9 | Token-manager admin cannot be handed to governance | **Low** | **Fixed** — same class as F-8 |
 | F-10 | Weight staked after activation could vote, inflating the quorum numerator against a fixed denominator | **High** | **Fixed** — found by stateful fuzzing |
@@ -174,6 +174,18 @@ treasury**, and the two-step authority handover the runbook prescribed for them 
 unnecessary. It remains necessary only for the token-manager admin, which has a genuine
 chicken-and-egg: registering the staking program as a minter must happen before
 governance can be asked to do anything.
+
+**(3) is now a command that exits non-zero rather than a line in a checklist.**
+`helix-bootstrap --verify` takes the four authorities as read from the chain and compares
+them to the plan that was supposed to install them, naming each one that differs. That
+matters more than it sounds: (1) removes the window and (2) would remove the
+vulnerability, but neither tells an operator whether what they actually did worked. A
+mitigation you cannot confirm afterwards is an assumption.
+
+The suite runs it both ways — against a clean bootstrap, and against a system where an
+attacker really did take the pool first. In the second case the atomic transaction fails
+as a whole, which is the first line of defence; the audit exists for the operator who
+reacts by re-running the parts that "failed", which is the natural and wrong response.
 
 Severity stays Medium: the window is short, the exploit immediately visible, and no user
 funds exist at that point. (2) remains the stronger fix and is worth taking on any
@@ -482,12 +494,43 @@ asked it. This is the fourth instance of that defect after F-2, F-8 and F-9.
 
 ### F-7 — Position accounts never closed
 
-**Severity:** Informational · **Status:** open
+**Severity:** Informational · **Status:** fixed
 
-Fully exiting a position leaves the account allocated and its rent unreclaimed. No
-security impact — Anchor's `close` would zero the discriminator, and re-initialising the
-same PDA snaps `reward_per_token_paid` to the current accumulator, so no rewards are
-reachable either way. Purely a cost and hygiene matter.
+Fully exiting a position left the account allocated and its rent unreclaimed. Purely a
+cost and hygiene matter — no security impact, since re-initialising the same PDA snaps
+`reward_per_token_paid` to the current accumulator, so no rewards were reachable either
+way.
+
+Fixed with a separate `close_position` instruction rather than a `close = owner`
+constraint on `unstake`. Anchor's `close` is unconditional, so it cannot express "only
+when this withdrawal happens to be the final one", and putting it on the withdrawal path
+would make every partial exit pay for a decision only the last one can make. It refuses
+unless principal, vote weight and unclaimed rewards are all zero.
+
+**The interesting part is what the fix nearly broke.** The obvious implementation also
+decrements `pool.position_count`, because the counter reads like "positions currently
+open". It is not: it seeds every position PDA *and* it is the electorate boundary
+[F-10](#f-10--post-snapshot-weight-could-vote) installed, which governance snapshots at
+activation and compares each voter's `position_id` against. Decrementing it would let the
+next `stake` land at the closed position's address **and** beneath an existing snapshot —
+a position created after a proposal opened, voting on it. That is F-10 exactly, reopened
+by a rent-reclamation change that has no obvious connection to governance.
+
+Mutation-tested, because the claim is worth no more than the test behind it. With the
+decrement in place, `closing_does_not_free_the_position_id_for_reuse` fails twice over:
+the counter assertion fires, and with that assertion disabled, re-staking at the freed id
+*succeeds* and reoccupies the closed address.
+
+The general lesson is about what a monotonic counter means. `position_count` is safe only
+under the reading "positions ever opened", and nothing in its name or type says so — the
+comment on it now does.
+
+Two smaller things came out of the same change. `stake` reported `MathOverflow` when
+`position_id` did not match the counter, which is an ordinary race between two of a user's
+own transactions being described as an arithmetic fault; it now has its own
+`UnexpectedPositionId`. And the `Unstaked` event's `remaining` field was documented as
+"zero means it was closed", which was never true and is now less true still — closing is a
+separate, optional transaction that emits `PositionClosed`.
 
 ---
 
@@ -500,28 +543,40 @@ reachable either way. Purely a cost and hygiene matter.
 | Governance capture via genuine majority | Low | Critical | **High** | Not preventable — timelock, spend cap, veto bound the damage |
 | Treasury drained outside governance | Very low | Critical | Medium | Single-signer `has_one` on the executor PDA |
 | Token-2022 fee accounting error | Low | High | Medium | Vault-delta crediting, **verified at runtime and mutation-tested** (F-4) |
-| Compute exhaustion at scale | Very low | High | Low | No unbounded iteration; **unbenchmarked** |
+| Compute exhaustion at scale | Very low | High | Low | No unbounded iteration; **measured** — see [the compute table](./TESTING.md#compute-cost) |
 | Arithmetic overflow | Very low | High | Low | `checked_*` everywhere + `overflow-checks = true` |
-| Operator error at deployment | **Medium** | High | **High** | F-1 mitigations + runbook verification steps |
+| Operator error at deployment | **Medium** | High | Medium | F-1 mitigations + `helix-bootstrap --verify`, which the suite runs against a front-run system |
 | Malicious program upgrade | Low | Critical | **High** | F-5 — unmitigated until Phase 7 |
 
-The two highest live risks are **not** in the cryptography or the maths. They are
-deployment-time operator error and an unmigrated upgrade authority — which is typical,
-and worth saying because it is where review attention usually is not.
+The two highest live risks are **not** in the cryptography or the maths. They are an
+unmigrated upgrade authority and governance capture by a genuine majority — which is
+typical, and worth saying because it is where review attention usually is not. Neither is
+a bug: one is undone work, the other is what governance *is*, bounded rather than
+prevented.
+
+Deployment-time operator error has come down from High to Medium, and only because the
+verification became a command with an exit code rather than a checklist item.
 
 ## 4. Recommended mitigations, prioritised
 
-1. **Integration tests, fee-bearing mint first** (F-4). Nothing else should ship before
-   this; several claims in this document depend on it.
-2. **Atomic bootstrap + post-deploy authority verification** (F-1).
+1. ~~**Integration tests, fee-bearing mint first** (F-4).~~ Done — 95 runtime tests
+   against the real BPF programs, the fee path mutation-tested.
+2. ~~**Atomic bootstrap + post-deploy authority verification** (F-1).~~ Done — the plan is
+   [`helix_ops::plan`](../ops), executed by the suite, and the verification is
+   `helix-bootstrap --verify`. Gating initialisers on a known deployer remains the
+   stronger fix and is worth taking on any redeploy.
 3. ~~**Compute-unit benchmarks** against staker count, to measure invariant §6.3 rather
    than argue it from code structure.~~ Done — see
    [TESTING.md](./TESTING.md#compute-cost). No instruction's cost grows with the staker or
    voter set, and the worst uses 17.9% of the default budget.
-4. **Trident fuzzing** with the invariant set as the oracle.
-5. **Migrate upgrade authority to governance** (F-5), and verify it.
-6. **External audit** once 1–5 are done. Commissioning one before integration tests
-   exist would spend an auditor's time on questions the test suite should answer.
+4. ~~**Trident fuzzing** with the invariant set as the oracle.~~ Done, but **not** with
+   Trident: its current release pins `solana-sdk ^2.3` against this workspace's 3.x, and
+   the equivalent is built on LiteSVM in [`fuzz.rs`](../tests/integration/src/fuzz.rs). It
+   found [F-10](#f-10--post-snapshot-weight-could-vote).
+5. **Migrate upgrade authority to governance** (F-5), and verify it. The one item on this
+   list still outstanding, and the only open Critical.
+6. **External audit** once 1–5 are done, scoped in
+   [AUDIT-READINESS.md](./AUDIT-READINESS.md).
 
 ## Limitations of this assessment
 
@@ -530,6 +585,13 @@ review — I share every blind spot that produced the defects. F-2 was found by 
 this document rather than by testing, which is evidence both that the exercise is worth
 doing and that it is not a substitute for independent review.
 
-No fuzzing, no formal verification, no runtime execution of cross-program flows. Treat
-this as a structured self-review that narrows what an external audit needs to look at,
-not as an assurance that the code is safe.
+That limitation has not gone away, but the evidence behind the document has changed since
+it was written. Cross-program flows are now executed rather than reasoned about, and a
+stateful fuzzer drives them in orders no person would write — which is how F-10 was found,
+in a property this document had already reasoned about and got wrong.
+
+What is still absent: formal verification, any independent review, and any deployment. No
+line of this has held real value. Treat it as a structured self-review that narrows what
+an external audit needs to look at — see
+[AUDIT-READINESS.md](./AUDIT-READINESS.md) for what an auditor need not re-derive — not as
+an assurance that the code is safe.

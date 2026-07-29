@@ -729,6 +729,27 @@ impl System {
         )
     }
 
+    pub fn close_position_ix(&self, position: Pubkey) -> solana_instruction::Instruction {
+        self.close_position_ix_for(&self.voter.pubkey(), position)
+    }
+
+    /// The same, for an owner other than [`Self::voter`].
+    pub fn close_position_ix_for(
+        &self,
+        owner: &Pubkey,
+        position: Pubkey,
+    ) -> solana_instruction::Instruction {
+        TestEnv::ix(
+            helix_staking::ID,
+            helix_staking::accounts::ClosePosition {
+                pool: self.pool,
+                owner: *owner,
+                position,
+            },
+            helix_staking::instruction::ClosePosition {},
+        )
+    }
+
     /// Builds a `stake` instruction without sending it, for negative tests.
     pub fn stake_ix(
         &self,

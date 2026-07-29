@@ -53,7 +53,7 @@ anchor build 2>&1 | tee build.log
       frame overflows as errors and *still exits 0* — the exit code cannot be trusted.
       See [F-3](./SECURITY-ASSESSMENT.md#f-3--sbf-stack-frame-overflow).
 - [ ] `anchor keys verify` — declared IDs match the keypairs
-- [ ] Runtime tests pass — `cargo test --workspace` covers the unit, doc and 83 runtime
+- [ ] Runtime tests pass — `cargo test --workspace` covers the unit, doc and 95 runtime
       tests, including the fuzz campaign
 - [ ] `cargo audit` clean
 
@@ -109,7 +109,9 @@ so it cannot be front-run. The three PDA-seeded initialisers go together.
 2. `initialize_pool` — stake mint = HLX, reward mint = HLX, both vaults PDAs.
    **`authority` = the realm's executor PDA**, `["executor", realm]`.
 3. `initialize_realm` — over that pool; sets quorum, approval, voting period, timelock and
-   the guardian. `authority` = its own executor PDA, so parameter changes need a vote.
+   the guardian. `authority` = its own executor PDA, so parameter changes need a vote —
+   **including the first one**. Settle these five numbers before you get here; see
+   step 4b.
 4. `initialize_treasury` — `governance_executor` = the same executor PDA.
 
 Note that steps 2–4 name the executor PDA directly. The executor's address is derivable
@@ -145,6 +147,9 @@ The tool does not submit. That is deliberate — see the note in
 [`ops/Cargo.toml`](../ops/Cargo.toml) — and it also means the last human check is not
 optional: nothing goes out until someone signs it.
 
+Once it lands, verify it with `--verify` (step 5) before depositing anything. Reading the
+plan proves what you *intended* to send; only the audit says what arrived.
+
 ## 4. Hand over the token-manager admin
 
 The one authority that genuinely cannot be set at initialisation.
@@ -175,54 +180,84 @@ and propose the admin onward — so nothing is stranded. That completeness was t
 [F-9](./SECURITY-ASSESSMENT.md#f-9--token-manager-admin-cannot-be-handed-to-governance):
 handing over the role without the powers would have been a fresh instance of the same bug.
 
-## 4b. Hand over the realm authority
+## 4b. The realm authority — already done, if you used the planner
 
-The realm is bootstrapped with a human `authority` so its parameters can be tuned during
-setup. Until this step runs, **that key can rewrite what "passing" means** — lower
-`quorum_bps` to the 0.01% floor and a dust position carries a treasury transfer. See
-[F-11](./SECURITY-ASSESSMENT.md#f-11--the-rules-of-governance-were-owned-from-outside-it),
-and `lowering_quorum_lets_a_dust_position_move_the_treasury`, which runs the attack.
+**There is no handover step here, and an earlier version of this runbook was wrong to
+prescribe one.** [`helix_ops::plan`](../ops) passes the realm's own executor PDA as
+`authority` in `initialize_realm`, so from the first block the realm exists, its parameters
+belong to the realm. Following the old instructions — "set the parameters directly while
+that is still cheap" — would fail with `NotAuthority`, because no human key ever holds it.
 
-Treat it as the last configuration change, not an afterthought: after it, every further
-parameter change costs a voting period plus a timelock.
+That is the stronger arrangement, and it has a consequence worth stating plainly:
 
-```bash
-# 1. Settle on final parameters and set them directly, while that is still cheap.
-#    update_realm_params(quorum_bps, approval_bps, voting_period,
-#                        timelock_delay, min_weight_to_propose)
+> **The realm parameters in the bootstrap transaction are the ones you get.** Changing any
+> of them afterwards costs a full voting period plus a timelock. There is no cheap
+> configuration window, because a cheap configuration window is exactly the thing
+> [F-11](./SECURITY-ASSESSMENT.md#f-11--the-rules-of-governance-were-owned-from-outside-it)
+> is about — a key that can rewrite what "passing" means. Lower `quorum_bps` to the 0.01%
+> floor and a dust position carries a treasury transfer;
+> `lowering_quorum_lets_a_dust_position_move_the_treasury` runs that attack.
 
-# 2. Propose handing the authority to the realm's own executor PDA, and pass it.
-#    ProposalAction::SetRealmAuthority { new_authority: <executor PDA> }
-#    -> activate -> vote -> finalize -> queue -> (timelock) -> execute_set_realm_authority
+So settle the five numbers **before** step 3, not after it. `helix-bootstrap` validates
+them locally and refuses to print a plan the chain would reject, which is the only reason
+you get to find out about a bad `approval_bps` before the window is open rather than
+during it.
 
-# 3. Confirm the old key is powerless.
-#    update_realm_params signed by the old authority must now fail with NotAuthority.
-```
+Parameters remain changeable by vote through `ProposalAction::UpdateRealmParams` —
+`governance_can_retune_its_own_parameters` covers it, and
+`a_proposal_cannot_set_parameters_the_validator_refuses` confirms a proposal cannot set
+values the direct instruction would have refused.
 
-Point it at the **executor PDA specifically**. Any other address that cannot be made to
-sign would freeze the realm's configuration permanently — the F-8 defect one step further
-along. Parameters stay reachable afterwards through
-`ProposalAction::UpdateRealmParams`, which
-`governance_can_retune_its_own_parameters` covers.
+**If you bootstrapped by hand** and named a key as `realm.authority`, hand it over with
+`ProposalAction::SetRealmAuthority { new_authority: <executor PDA> }` through the full
+lifecycle, then confirm `update_realm_params` signed by the old key fails with
+`NotAuthority`. Point it at the executor PDA *specifically*: any other address that cannot
+be made to sign freezes the realm's configuration permanently, which is the F-8 defect one
+step further along.
 
 ## 5. Verify
 
 Do not skip. This is what catches F-1 and misconfiguration.
 
+The four authorities are checked by a command rather than by eye, because a checklist item
+that reads "confirm the authority is correct" is satisfied by a tired person glancing at
+two base58 strings that share a prefix:
+
+```bash
+# Read the four values off the chain first.
+POOL=$(anchor account helix_staking.Pool     <POOL_PDA>     --provider.cluster devnet)
+REALM=$(anchor account helix_governance.Realm <REALM_PDA>    --provider.cluster devnet)
+TREZ=$(anchor account helix_treasury.Treasury <TREASURY_PDA> --provider.cluster devnet)
+
+cargo run -p helix-ops --bin helix-bootstrap -- \
+    --payer <PAYER> --mint <MINT> --guardian <GUARDIAN> --verify \
+    --observed-pool-authority   <pool.authority> \
+    --observed-realm-authority  <realm.authority> \
+    --observed-treasury-spender <treasury.governance_executor> \
+    --observed-guardian         <realm.guardian>
+```
+
+Exit 0 means every authority is the executor PDA. Exit 1 names each one that is not, and
+means **do not deposit anything into this system** — the PDAs are seeded by the mint, so
+there is no fixing it in place. Pass the same `--payer/--mint/--guardian/--quorum-bps/...`
+you bootstrapped with; the tool re-derives the plan and compares against it.
+
+`the_audit_catches_an_initialiser_that_was_front_run` runs this against a system where the
+pool really was taken by someone else first.
+
 ```bash
 anchor idl fetch <PROGRAM_ID> --provider.cluster devnet   # IDL is published
 ```
 
-- [ ] HLX mint authority == `["mint_authority", config]` PDA, and **no keypair holds it**
-- [ ] `pool.authority` == realm executor PDA — set at init, so this should already hold
-- [ ] `treasury.governance_executor` == realm executor PDA — likewise
-- [ ] `realm.authority` == its own executor PDA, so parameter changes require a vote.
-      **The single most important line in this list** — until it holds, everything below
-      it can be undone by one key changing the thresholds (F-11)
+Then, by hand:
+
+- [ ] HLX mint authority == `["mint_authority", config]` PDA, and **no keypair holds it**.
+      `mint_authority_is_pda` and `no_key_present_at_creation_can_mint` assert this at
+      runtime, but assert it again on the real mint — the test proves the instruction is
+      correct, not that you ran it against the right accounts
 - [ ] `realm.quorum_bps`, `approval_bps`, `voting_period`, `timelock_delay` and
-      `min_weight_to_propose` all match intent, checked *after* the handover rather than
-      before
-- [ ] `realm.guardian` == the intended multisig, and nothing else
+      `min_weight_to_propose` all match intent. **These are final** — see step 4b; changing
+      one now costs a voting period plus a timelock
 - [ ] `token_config.admin` == the realm executor PDA once step 4 completes, and
       `pending_admin` is cleared
 - [ ] Exactly one registered minter, and it is the staking program's reward PDA
@@ -232,7 +267,10 @@ anchor idl fetch <PROGRAM_ID> --provider.cluster devnet   # IDL is published
       one removes the control)
 
 Smoke test with a small amount before announcing anything: stake → wait → claim →
-unstake, and one `Signal` proposal through the full lifecycle including `execute`.
+unstake → `close_position`, and one `Signal` proposal through the full lifecycle including
+`execute`. Close the smoke-test position deliberately rather than leaving it: it is the one
+path that deallocates an account, and the only cheap opportunity to confirm the rent comes
+back to the right key.
 
 ## 6. Verifiable builds
 

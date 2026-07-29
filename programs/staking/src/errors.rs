@@ -49,4 +49,17 @@ pub enum StakingError {
 
     #[msg("Arithmetic overflow")]
     MathOverflow,
+
+    // New variants are appended rather than inserted. Anchor numbers these in
+    // declaration order from 6000, so inserting one silently renumbers every
+    // error after it — and any client, log or runbook that recorded the old
+    // number starts naming a different failure.
+    #[msg("Position still holds principal or vote weight")]
+    PositionNotEmpty,
+
+    #[msg("Position has unclaimed rewards")]
+    UnclaimedRewards,
+
+    #[msg("position_id must equal the pool's current position_count")]
+    UnexpectedPositionId,
 }
