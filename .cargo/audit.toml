@@ -1,0 +1,57 @@
+# cargo-audit configuration.
+#
+# CI runs `cargo audit --deny warnings`, so *any* advisory fails the build —
+# including the `unmaintained` and `unsound` classes, which cargo-audit does not
+# treat as errors by default. That strictness is the point: it means a genuinely
+# new advisory against this dependency tree turns the build red.
+#
+# It only works if the advisories that are already here, permanently, and not
+# actionable are listed below with a reason. The previous arrangement failed the
+# job on all six of these every single run since the repository was created,
+# which trains a reader to ignore a red audit — the exact opposite of what an
+# audit job is for. An ignore list with reasons distinguishes "known, accepted,
+# not fixable here" from "new, look at this".
+#
+# Every entry below is a transitive dependency. None is a direct dependency of
+# any Helix crate, and none can be upgraded without the Solana or Anchor stack
+# upgrading first. Re-check this list whenever those are bumped: an entry that
+# no longer appears in `cargo audit` output is dead weight, and dead entries are
+# how an ignore list quietly starts suppressing something real.
+#
+# Verify provenance with:  cargo tree --invert <crate> --edges normal
+
+[advisories]
+ignore = [
+  # ansi_term is unmaintained. Reached only through `litesvm`, the in-process
+  # test harness — it is a dev-dependency of tests/integration and is never
+  # compiled into a deployed program. Terminal colour codes, no untrusted input.
+  "RUSTSEC-2021-0139",
+
+  # bincode 1.x is unmaintained. Pulled by `anchor-lang` 1.1.2 itself and by
+  # agave-syscalls, so it cannot be dropped while the framework depends on it.
+  # This one does reach the programs. Anchor uses it for internal serialisation;
+  # all account and instruction data in this workspace is Borsh, and the
+  # decoders in indexer/ are Borsh throughout.
+  "RUSTSEC-2025-0141",
+
+  # derivative is unmaintained. A proc-macro, so it runs at compile time and
+  # emits no runtime code of its own. Reached via ark-ec/ark-ff/ark-poly under
+  # ark-bn254, which arrives through solana-poseidon.
+  "RUSTSEC-2024-0388",
+
+  # libsecp256k1 0.6 is unmaintained. Reached only through agave-syscalls, which
+  # is the *host* side of the SBF runtime — litesvm and solana-bpf-loader-program
+  # — not anything that ships in a program binary. The programs here use ed25519
+  # signatures and Anchor's own signer checks; none calls secp256k1 recovery.
+  "RUSTSEC-2025-0161",
+
+  # paste is unmaintained. Proc-macro, compile-time only, reached via ark-ff
+  # (both 0.4 and 0.5 are in the tree). No runtime component.
+  "RUSTSEC-2024-0436",
+
+  # rand 0.7.3 is unsound: `rand::rng()` can misbehave with a custom global
+  # logger installed. Reached only as a dependency of libsecp256k1 0.6 above, so
+  # it shares that entry's reasoning — host-side runtime, not program code. This
+  # workspace installs no custom logger, and BPF programs cannot.
+  "RUSTSEC-2026-0097",
+]

@@ -136,7 +136,7 @@ indexer/           event decoding, reorg-safe ingestion, projection, read API
 ops/               the atomic bootstrap as a plan, plus the audit that verifies it landed
 app/               Next.js dashboard: analytics over that API, write flows over the chain
 tests/integration/ runtime tests against the real BPF programs via LiteSVM
-scripts/           toolchain bootstrap, program keys, documentation link check
+scripts/           toolchain bootstrap, program keys, documentation and program-id checks
 docs/              the five deliverables above
 .github/workflows/ fmt, clippy -D warnings, doc links, cargo-audit, build, test
 ```

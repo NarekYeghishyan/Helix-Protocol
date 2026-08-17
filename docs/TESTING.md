@@ -694,16 +694,101 @@ you which of the two you have**, which is why it is a runbook step rather than a
 
 [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) runs on every push and PR:
 
-1. **lint** — `fmt --check`, `clippy -D warnings`, eslint/prettier. Fast, fails first.
-2. **audit** — `cargo audit` against RustSec.
-3. **test** — `anchor keys verify`, `anchor build` with the stack-offset grep, then
-   `cargo test --workspace` (unit + doc + runtime, including the compute
-   benchmarks). Artifacts (`.so`, IDL) retained 14
-   days. `anchor test` is deliberately not run: there is no TypeScript suite, and stubbing
-   it green would report a passing integration suite containing nothing.
+1. **lint** — `fmt --check`, `clippy -D warnings`, the documentation link check, and
+   `scripts/check-program-ids.mjs`. Needs no toolchain beyond Rust, so it fails first.
+2. **dashboard** — `npm ci`, then the 92 transaction-builder tests, `tsc --noEmit` and
+   `next build`.
+3. **audit** — `cargo audit --deny warnings` against RustSec.
+4. **test** — `anchor build` with the stack-offset grep, then `cargo test --workspace`
+   (unit + doc + runtime, including the compute benchmarks) against a Postgres service
+   container. Artifacts (`.so`, IDL) retained 14 days. `anchor test` is deliberately not
+   run: there is no TypeScript suite, and stubbing it green would report a passing
+   integration suite containing nothing.
 
 `RUSTFLAGS: -D warnings` is set workspace-wide, so a warning fails the build. Warnings
 that are permitted to accumulate stop being read.
+
+### The gate that skipped the suite it was guarding
+
+For the repository's entire history — 23 runs, none green — the **test** job failed on its
+fourth step and skipped every step after it, `anchor build` and `cargo test --workspace`
+included. Not one of the 256 Rust tests had ever executed on CI. They passed locally, on
+one machine, and the badge said otherwise.
+
+The step was `anchor keys verify`, and it ran immediately after `gen-program-keys.mjs`.
+That script writes `target/deploy/*-keypair.json`, which is gitignored and generated per
+developer; `anchor keys verify` compares `declare_id!` against those files. On a clean
+runner it was therefore comparing a committed address against a keypair invented three
+seconds earlier by a CSPRNG. It could not pass. **The job destroyed the precondition of its
+own check, then failed on the check, then skipped the tests.**
+
+This is the same shape as the finding in `governance/src/instructions/proposal.rs` — a
+check positioned to catch something it is structurally incapable of catching — and it is
+worth naming the common cause. Both look correct while reading the file they live in.
+Neither survives asking *what state is this actually running against*.
+
+The replacement is [`scripts/check-program-ids.mjs`](../scripts/check-program-ids.mjs),
+which compares the three places an address is written in **source** — `declare_id!` and the
+two `[programs.<cluster>]` tables in Anchor.toml — and needs no keypairs. That drift is the
+real failure the original was reaching for: `declare_id!` is compiled into the bytecode
+while Anchor.toml is what `anchor deploy` and the clients read, so a mismatch deploys to one
+address and addresses another, and reports `DeclaredProgramIdMismatch` at runtime rather
+than anything at build time. It is mutation-tested three ways — a one-character change to an
+address, a removed entry, and an entry naming a crate that does not exist — and it moved to
+the **lint** job, where it fails in seconds instead of after a fifteen-minute toolchain
+install.
+
+`anchor keys verify` is still the right check *at deployment*, where the keypairs are real
+and are the thing being verified. It remains in the [runbook](./RUNBOOK.md) for that.
+
+### Why the audit job was always red
+
+`rustsec/audit-check@v2` fails on the `unmaintained` and `unsound` advisory classes and
+offers no way to accept a known one. Six of them arrive transitively through the Solana and
+Anchor stacks — `ansi_term`, `bincode` 1.x, `derivative`, `libsecp256k1` 0.6, `paste`, and
+`rand` 0.7 — so the job was red on every run for reasons no change to this repository could
+address. An audit that is always red is one nobody reads.
+
+It now runs `cargo audit --deny warnings`, which is *stricter* than cargo-audit's default
+(that exits zero on both classes), against the ignore list in
+[`.cargo/audit.toml`](../.cargo/audit.toml). Each of the six is listed with its provenance —
+verified with `cargo tree --invert` — and why it is accepted; three of them reach only
+`litesvm` and the SBF loader host, never a deployed program. Anything outside that list
+fails. Removing a single entry was checked to turn the job red, so the list suppresses six
+named advisories rather than the category.
+
+### The lockfile that was valid on every machine except the one that mattered
+
+The **dashboard** job failed on `npm ci` from the day it was added. The install succeeded
+for every developer, and it succeeded when reproduced deliberately: same lockfile, fresh
+clone, Linux, Node 24 — exit 0, every time. Nothing in the file was wrong. It is
+`lockfileVersion` 3, in sync with `package.json`, and carries all 32 platform-gated optional
+binaries including `linux-x64`.
+
+The variable was npm's own version. `node-version: 24` floats to the newest 24.x, and the
+npm bundled with it floats too. The lockfile had been written by npm 11.6, which does not
+record `bufferutil` and `utf-8-validate` — optional peers of `ws`, reached through
+`@solana/web3.js`. npm 11.19 treats their absence as the lockfile being out of sync and
+refuses with `EUSAGE`. The same file, the same command: accepted by one npm, rejected by the
+next.
+
+Two things had to be true for this to survive all seven runs the job has had. The lockfile
+was generated by an npm older than the runner's — which is the ordinary state of affairs,
+since developers upgrade npm on their own schedule. And npm prints that diagnosis **only**
+to a debug log under its cache directory, so what the job reported was `Process completed
+with exit code 1` and the reason died with the runner.
+
+The fix is one regenerated lockfile: two entries added, no version changed, nothing removed,
+verified to install cleanly under *both* npm 11.6 and 11.19 — a fix that only satisfied the
+newer one would have moved the failure onto every developer instead. The job now also prints
+`node --version` and `npm --version` before installing, and dumps the npm debug log when the
+step fails. Neither changes an outcome; both turn the next occurrence into something a
+reader can diagnose without a local reproduction.
+
+The general shape is worth keeping: **a floating tool version in CI plus a pinned artifact
+generated by a different one is a bug waiting on a release.** The `npm ci` gate did its job
+— it refused a lockfile it could not honour. What failed was that nothing carried the reason
+out of the runner.
 
 ## Adding a test
 

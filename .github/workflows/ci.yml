@@ -43,6 +43,22 @@ jobs:
       - name: Documentation links
         run: python3 scripts/check-doc-links.py
 
+      # A program's address is written in three places that must agree —
+      # `declare_id!` in the crate, and the two `[programs.<cluster>]` tables.
+      # `declare_id!` is compiled into the bytecode while Anchor.toml is what
+      # `anchor deploy` and the clients read, so drift means deploying to one
+      # address and addressing another. It surfaces as DeclaredProgramIdMismatch
+      # at runtime and as nothing at all at build time.
+      #
+      # This replaces `anchor keys verify`, which used to run in the build job
+      # against keypairs the job had generated at random moments earlier — see
+      # scripts/check-program-ids.mjs for why that could not pass. It lives here
+      # because it needs no toolchain, so it fails in seconds rather than after
+      # a fifteen-minute Solana and Anchor install. Node is preinstalled on the
+      # runner, as python3 above already assumes.
+      - name: Program addresses
+        run: node scripts/check-program-ids.mjs
+
   dashboard:
     name: Dashboard
     runs-on: ubuntu-latest
@@ -58,10 +74,48 @@ jobs:
           cache: npm
           cache-dependency-path: app/package-lock.json
 
+      # `node-version: 24` floats to the newest 24.x, and so does the npm bundled
+      # with it. That is why this install failed on all seven runs since the job
+      # was added while succeeding on every developer machine: the lockfile was written by
+      # npm 11.6, which does not record the optional peers `bufferutil` and
+      # `utf-8-validate` (reached through `ws`, under @solana/web3.js), and npm
+      # 11.19 refuses a lockfile that omits them with EUSAGE. Same file, same
+      # command, opposite verdicts — the version gap was the whole bug.
+      #
+      # Printing the versions is what turns that from a mystery into a two-line
+      # observation, so it stays. If this breaks again, compare these numbers
+      # against the npm that last wrote app/package-lock.json.
+      - name: Environment
+        run: |
+          node --version
+          npm --version
+          npm config get registry
+          npm config get cache
+          df -h / | tail -1
+
       # `--ignore-scripts`: a transitive package's postinstall shells out to
       # `yarn`, which nothing here depends on. `ci` rather than `install`, so a
       # drifted lockfile fails instead of being silently rewritten.
       - run: npm ci --ignore-scripts
+
+      # npm writes the full error to a debug log and the job summary keeps only
+      # "Process completed with exit code 1". The EUSAGE above names the two
+      # missing packages in that log and nowhere else, so without this step the
+      # reason dies with the runner — which is precisely how a two-entry lockfile
+      # problem stayed unexplained for every run the job has had.
+      - name: npm debug log
+        if: failure()
+        run: |
+          shopt -s nullglob
+          logs=("$(npm config get cache)"/_logs/*.log)
+          if [ ${#logs[@]} -eq 0 ]; then
+            echo "npm wrote no debug log — the failure was not npm's own."
+            exit 0
+          fi
+          for log in "${logs[@]}"; do
+            echo "===== $log ====="
+            tail -100 "$log"
+          done
 
       # Node's built-in runner over TypeScript directly — no test framework and
       # no build step, which is why this runs before the compile.
@@ -80,9 +134,46 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - uses: rustsec/audit-check@v2
+
+      # Cached the same way as the Anchor binary below, for the same reason:
+      # building it from source on every run costs minutes and never changes.
+      #
+      # A cached binary does not mean stale results. cargo-audit fetches the
+      # RustSec advisory database on every run, so a new advisory against this
+      # dependency tree is seen by an old binary. The version is in the key so
+      # that bumping the pin below actually rebuilds rather than restoring the
+      # previous binary forever.
+      - name: Cache cargo-audit
+        id: audit-cache
+        uses: actions/cache@v4
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          path: ~/.cargo/bin/cargo-audit
+          key: cargo-audit-0.22-${{ runner.os }}
+
+      - name: Install cargo-audit
+        if: steps.audit-cache.outputs.cache-hit != 'true'
+        # Clear the workspace-wide `-D warnings`. It is there to keep *this*
+        # code warning-free; applied to a third-party build it turns any
+        # deprecation in cargo-audit's dependency tree into a failed install,
+        # which would be the same "always red for reasons outside the
+        # repository" this job is being fixed to stop doing.
+        env:
+          RUSTFLAGS: ""
+        run: cargo install cargo-audit --locked --version ^0.22
+
+      # `cargo audit` directly rather than rustsec/audit-check@v2. That action
+      # fails the job on the `unmaintained` and `unsound` advisory classes with
+      # no way to accept a known one — so it failed on all six that the Solana
+      # and Anchor stacks carry transitively, on every run since the first
+      # commit. An audit that is always red is one nobody reads, which is worse
+      # than not running it.
+      #
+      # `--deny warnings` is *stricter* than cargo-audit's default, which exits
+      # zero on those two classes. The six accepted advisories are listed with a
+      # reason each in .cargo/audit.toml, and anything outside that list fails
+      # here — which is the distinction the previous setup could not make.
+      - name: cargo audit
+        run: cargo audit --deny warnings
 
   test:
     name: Build & test programs
@@ -152,13 +243,17 @@ jobs:
         with:
           node-version: 22
 
+      # `anchor build` wants a keypair per program in target/deploy and will
+      # invent one silently if it is missing, so this generates them explicitly.
+      # They are throwaway on CI — nothing is deployed here, and the address
+      # compiled into the bytecode comes from `declare_id!`, not from these
+      # files. That is also why the addresses are checked in the lint job
+      # instead: it is the source that has to agree, not a generated secret.
+      #
       # Deliberately dependency-free — it uses only `node:crypto`, so there is
       # nothing to install before it runs.
       - name: Generate program keypairs
         run: node scripts/gen-program-keys.mjs
-
-      - name: Verify declared program IDs match keypairs
-        run: anchor keys verify || (echo "::error::declare_id! does not match target/deploy keypairs — run 'anchor keys sync'" && exit 1)
 
       - name: Build programs and fail on SBF stack overflow
         # `anchor build` reports "Stack offset of N exceeded max offset of 4096"
