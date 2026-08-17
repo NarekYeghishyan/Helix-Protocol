@@ -30,6 +30,7 @@ import {
   createAssociatedTokenAccountIdempotentIx,
   derivePda,
 } from "./programs.ts";
+import { GOVERNANCE_BOUNDS } from "./proposal.ts";
 import type { Prepared } from "./tx.ts";
 
 export type VoteChoiceName = "For" | "Against" | "Abstain";
@@ -237,6 +238,97 @@ export function buildVote(params: VoteParams & { choice: VoteChoiceName }): Prep
     instructions: [instruction],
     feePayer: voter,
   };
+}
+
+export interface CreateProposalParams {
+  realm: Realm;
+  /** The position proving the proposer meets `min_weight_to_propose`. */
+  proposerPosition: PublicKey;
+  proposer: PublicKey;
+  /** As `composeAction` builds it — `{ kind, ...fields }`. */
+  action: { kind: string; [field: string]: unknown };
+  title: string;
+  descriptorUri: string;
+}
+
+export function buildCreateProposal(params: CreateProposalParams): Prepared {
+  const { realm, proposerPosition, proposer, action, title, descriptorUri } = params;
+
+  /**
+   * The same race `stake` has: `proposal_id` must equal the realm's *current*
+   * `proposal_count`, and anyone else's proposal moves it.
+   *
+   * The two ways to get it wrong fail differently, which matters because the
+   * preview is where someone reads about it. Losing the race — submitting the id
+   * another proposal just took — never reaches the program's check: the proposal
+   * PDA is seeded on this id, so `init` refuses the occupied account first and
+   * the failure is system-program error 0. Being *ahead* of the counter does
+   * reach it, and until this flow was written it reported `MathOverflow` — the
+   * defect `stake.rs` had corrected for `position_id` and never carried across.
+   * It is `UnexpectedProposalId` now. `errors.ts` decodes both.
+   */
+  const proposalId = realm.proposal_count;
+
+  const instruction = buildInstruction(GOVERNANCE, GOVERNANCE_PROGRAM_ID, "create_proposal", {
+    accounts: {
+      proposer,
+      proposer_position: proposerPosition,
+      // `has_one = owner` ties this to the position and the handler requires it
+      // to equal the signer. Passing anything but the proposer is a transaction
+      // the program refuses.
+      owner: proposer,
+    },
+    args: {
+      proposal_id: proposalId,
+      action,
+      title,
+      descriptor_uri: descriptorUri,
+    },
+    seedFields: { "realm.staking_pool": realm.staking_pool },
+  });
+
+  return {
+    summary: `Create proposal #${proposalId}: ${title}`,
+    instructions: [instruction],
+    feePayer: proposer,
+  };
+}
+
+/**
+ * Why a proposal cannot be created, or `null` if it can.
+ *
+ * The length limits are counted in **bytes**, not characters, because that is
+ * what `title.len()` measures on a Rust `String`. A 64-character title of
+ * non-ASCII text is longer than 64 bytes and would be refused on chain after
+ * passing a `length <= 64` check here — the kind of disagreement that only shows
+ * up for the users least likely to be able to explain it.
+ */
+export function whyCannotPropose(
+  realm: Realm,
+  position: Position | null,
+  title: string,
+  descriptorUri: string,
+): string | null {
+  if (!position) return "Select a position to propose with.";
+
+  if (position.weighted_amount < realm.min_weight_to_propose) {
+    return (
+      `This position carries ${position.weighted_amount} of weight and the realm requires ` +
+      `${realm.min_weight_to_propose} to propose. Proposing costs weight, not just rent.`
+    );
+  }
+
+  if (title.trim() === "") return "A title is required.";
+
+  const bytes = (text: string) => new TextEncoder().encode(text).length;
+  if (bytes(title) > GOVERNANCE_BOUNDS.MAX_TITLE_LEN) {
+    return `The title is ${bytes(title)} bytes; the program accepts ${GOVERNANCE_BOUNDS.MAX_TITLE_LEN}.`;
+  }
+  if (bytes(descriptorUri) > GOVERNANCE_BOUNDS.MAX_URI_LEN) {
+    return `The link is ${bytes(descriptorUri)} bytes; the program accepts ${GOVERNANCE_BOUNDS.MAX_URI_LEN}.`;
+  }
+
+  return null;
 }
 
 /**

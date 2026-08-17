@@ -70,10 +70,24 @@ pub fn create_proposal(
         ctx.accounts.proposer.key(),
         GovernanceError::NotPositionOwner
     );
+    // Not `MathOverflow`, which this reported until a dashboard tried to create
+    // a proposal and had to explain the failure. `stake.rs` made exactly this
+    // correction for `position_id` — its comment reads that telling someone
+    // their arithmetic overflowed "sends them looking in the wrong place
+    // entirely" — and the lesson had not been carried across.
+    //
+    // Note what this does *not* catch, because it reads as though it should.
+    // Losing a race to another proposer does not arrive here: the PDA above is
+    // seeded on `proposal_id`, so the loser's account already exists and `init`
+    // refuses it in `try_accounts` before this line runs, exactly as a second
+    // vote from one position is refused. What reaches here is an id *ahead* of
+    // the counter — a client computing it from anything but a fresh read of
+    // `realm.proposal_count`. Both cases are covered by tests in
+    // `governance_e2e.rs`, and they assert different failures on purpose.
     require_eq!(
         proposal_id,
         ctx.accounts.realm.proposal_count,
-        GovernanceError::MathOverflow
+        GovernanceError::UnexpectedProposalId
     );
 
     // Spam pricing: proposing costs weight, not just rent.

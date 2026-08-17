@@ -27,6 +27,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import { useFlow } from "@/components/flow";
 import { Preview } from "@/components/preview";
+import { ProposeForm } from "@/components/propose";
 import { useExplorer } from "@/components/stake";
 import {
   ADVANCE,
@@ -147,6 +148,13 @@ export function VotePanel({ realmAddress }: { realmAddress: string }) {
         {bpsToPercent(realm.approval_bps)} · timelock{" "}
         {(Number(realm.timelock_delay) / 3600).toFixed(0)}h
       </p>
+
+      <ProposeForm
+        realm={realm}
+        positions={positions}
+        proposer={publicKey}
+        reload={reload}
+      />
 
       {proposals.length === 0 && <p className="state muted">This realm has no proposals.</p>}
 

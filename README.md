@@ -9,10 +9,10 @@ Rust with the Anchor framework.
 [![License](https://img.shields.io/badge/license-Apache--2.0-green)](./LICENSE)
 
 > **Status: unaudited. Not deployed to a public cluster.** All four programs build to BPF
-> and pass 254 tests locally, including runtime tests that execute the full governance →
+> and pass 256 tests locally, including runtime tests that execute the full governance →
 > treasury authority chain and a real Token-2022 mint with transfer fees, eight that run
 > against a local validator with the programs actually deployed, and ten that persist and
-> reload the projection through a real Postgres. The dashboard adds 72 more over the
+> reload the projection through a real Postgres. The dashboard adds 92 more over the
 > transaction builders. A devnet deployment is scoped in
 > [ROADMAP.md](./docs/ROADMAP.md), and no transaction has yet been signed by a browser
 > wallet. Nothing here has held real value. See [SECURITY.md](./SECURITY.md).
@@ -149,10 +149,10 @@ one is Anchor's.
 ```bash
 anchor build 2>&1 | tee build.log  # not optional — see below
 grep -i "stack offset" build.log   # must be empty — anchor build exits 0 even when it isn't
-cargo test --workspace             # 254 tests: unit + doc + runtime
+cargo test --workspace             # 256 tests: unit + doc + runtime
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo fmt --all -- --check
-cd app && npm test                 # 72 more, over the transaction builders
+cd app && npm test                 # 92 more, over the transaction builders
 ```
 
 `anchor build` first, every time. The runtime tests load `.so` files from `target/deploy`

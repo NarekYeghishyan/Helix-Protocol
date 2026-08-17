@@ -10,8 +10,8 @@ is bounded by the honesty of its coverage claims.
 ```bash
 anchor build                                                  # required first — the
                                                               # runtime tests load .so files
-cargo test --workspace                                        # 254 tests: unit + doc + runtime
-cd app && npm test                                            # 72 dashboard tests, no framework
+cargo test --workspace                                        # 256 tests: unit + doc + runtime
+cd app && npm test                                            # 92 dashboard tests, no framework
 cargo test -p helix-staking --lib                             # one program's unit tests
 cargo test -p helix-staking --lib -- --nocapture rounding     # one test, with output
 
@@ -85,8 +85,8 @@ code you did not expect.
 
 **135 unit tests** over pure functions and state machines, **98 runtime tests** against the
 real BPF programs under LiteSVM, **18 live tests** against a validator and a Postgres
-instance, and **72 dashboard tests** under `node --test`. `cargo test --workspace` reports
-254, the balance being doctests and the two checks that compare generated build artifacts
+instance, and **92 dashboard tests** under `node --test`. `cargo test --workspace` reports
+256, the balance being doctests and the two checks that compare generated build artifacts
 against hand-maintained lists — `event_coverage.rs` and `idl_sync.rs`.
 
 The tiers are not a hierarchy but a statement about what each can prove. Unit tests reach
@@ -131,7 +131,7 @@ compares against the IDL proves only that a file was read twice.
 | `smoke.rs` | 2 | All four programs load and are executable; IDs are distinct |
 | `staking_transfer_fee.rs` | 4 | §1.1, §1.3, §2.1–§2.3 against a real 1% transfer-fee mint |
 | `staking_lifecycle.rs` | 12 | §1.2, §1.4, §6.1, §6.2, §6.4, §6.5 — funding, rate solvency, accrual, claim, partial and full unstake, pause semantics, cross-owner claim refused |
-| `governance_e2e.rs` | 15 | §4.1–4.7, §4.11–4.13, §5.1 — the authority chain plus one negative test per threat-model attack |
+| `governance_e2e.rs` | 17 | §4.1–4.7, §4.11–4.13, §5.1 — the authority chain plus one negative test per threat-model attack, and the two ways a `proposal_id` can be wrong, which fail differently |
 | `vesting_e2e.rs` | 12 | §1.5, §1.6, §7.5, §7.7–7.9 — grant → cliff → claim → revoke, forward-only revocation, committed balance protection, executor migration |
 | `bootstrap_atomicity.rs` | 6 | F-1's mitigation: the bootstrap fits one transaction (748 B / 17 accounts, asserted against the 1232-byte limit), re-initialisation fails afterwards, and §5.8 — the post-deploy audit run against a clean system *and* against one whose pool really was front-run |
 | `authority_invariants.rs` | 4 | §5.3, §5.5 — the mint's authorities are the PDA and no key present at creation can mint; every stored bump is canonical, and a non-canonical derivation of the vault authority is refused |
@@ -149,7 +149,7 @@ as `event_coverage.rs`.
 
 ### Dashboard tests
 
-`cd app && npm test` — 72 tests under `node --test`, with Node's native type-stripping. No
+`cd app && npm test` — 92 tests under `node --test`, with Node's native type-stripping. No
 test framework is installed and there is no build step.
 
 The dashboard builds transactions from the IDL, which makes the obvious test worthless: the
@@ -169,7 +169,8 @@ The third is the one that earns its keep, because the hazard it covers is silent
 | `amount.test.ts` | 8 | Formatting past 2^53, truncation direction, and that the value genuinely does not survive a `Number` — so the test cannot go vacuous |
 | `api.test.ts` | 7 | The read-API client against a stub HTTP server the test starts, rather than a patched `fetch` |
 | `coder.test.ts` | 16 | Every discriminator in both IDLs against Anchor's rule; exact instruction bytes; a `u64` argument refusing a `number`; a `Position` decoded from bytes the coder did not write; a `Pool` refused as a `Position`; a `Proposal` decoded past its variable-length fields |
-| `actions.test.ts` | 21 | The five flows account for account, including that `stake` and `unstake` order the vault and the owner's token account *differently*; both vote gates at their boundaries; the four lifecycle transitions requiring no signer and writing only the proposal; the timelock and its grace period; a non-canonical pool refused; a derivable PDA refusing to be overridden |
+| `actions.test.ts` | 25 | The five flows account for account, including that `stake` and `unstake` order the vault and the owner's token account *differently*; both vote gates at their boundaries; the four lifecycle transitions requiring no signer and writing only the proposal; the timelock and its grace period; proposal creation, with the title limit counted in *bytes* as the program counts it; a non-canonical pool refused; a derivable PDA refusing to be overridden |
+| `proposal.test.ts` | 15 | The action set against a hand-written list of the `ProposalAction` variants; a nested `RealmParams` flattened and rebuilt; a blank field refused rather than becoming `0n`; a decimal amount refused rather than truncated; every variant composing into bytes the coder accepts |
 | `errors.test.ts` | 10 | Codes worked out from the `#[error_code]` enums; the 6000-in-declaration-order rule `errors.rs` documents; attribution to the program the logs blamed; system-program error 0 named |
 | `chain.test.ts` | 7 | The account field lists the UI reads, in layout order — a cast is not a check, and a renamed field compiles fine while every figure derived from it becomes `undefined` |
 | `events.test.ts` | 5 | The claimed amount surviving base64 exact past 2^53; `amount_sent` versus `amount_credited`; data lines from other programs ignored rather than mistaken for events |
@@ -576,6 +577,50 @@ asserted about the *sequence* and not about the result.
 
 The second is caught twice, which is the right number for a paging bug: the history comes
 back short, and a resumed descent no longer rejoins where it stopped.
+
+### The check that looked like it caught a race, and did not
+
+Writing the proposal-creation flow turned up a defect of the kind this document
+exists for: not a wrong answer, but a **claim about behaviour the system does not
+have**.
+
+`create_proposal` requires `proposal_id == realm.proposal_count` and reported a
+mismatch as `MathOverflow` — the exact defect `stake.rs` had already corrected for
+`position_id`, where the comment reads that telling someone their arithmetic
+overflowed "sends them looking in the wrong place entirely". The lesson had never
+been carried across, because nothing had needed to explain the failure to anyone.
+
+Fixing it produced a better finding. The first test written for
+`UnexpectedProposalId` asserted the obvious case — two proposers racing for the
+same id — and **failed**:
+
+```text
+a lost race should name itself, not the arithmetic: InstructionError(0, Custom(0))
+  Allocate: account Address { address: ADkKMrhR2si… } already in use
+```
+
+The proposal PDA is seeded on `proposal_id`, so the loser's account already
+exists and Anchor's `init` refuses it inside `try_accounts` — before the handler
+body runs at all. The race is caught structurally, by the same mechanism that
+makes double voting impossible, and the handler check *cannot* fire for it.
+
+What the check does catch is an id **ahead** of the counter: a client computing it
+from an indexer's count, a cached realm, or a guess. Both cases now have a test,
+and they assert different failures on purpose. The comments in `stake.rs` and
+`proposal.rs` were both rewritten to say which path reaches which — the staking
+one had the same imprecision, and its genuinely reachable path is the one
+`close_position` created by freeing an id below the counter.
+
+Three things worth taking from it:
+
+- **A test that fails for the right reason is worth more than one that passes.**
+  The passing version of this would have been to assert `UnexpectedProposalId` on
+  the ahead-of-counter case only, and the misleading comment would have survived.
+- **`init` runs before the handler.** Any check on a value that also seeds an
+  `init`ed PDA is unreachable for the collision case, always.
+- **The client had to know.** `errors.ts` decodes system-program error 0 into a
+  sentence naming all three flows that produce it, because the program's own error
+  never covers that path.
 
 ### The storage tests, mutated the same way
 

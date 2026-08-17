@@ -77,7 +77,7 @@ test("a code is resolved against the program the logs say failed", () => {
   assert.notEqual(asStaking.message, asGovernance.message);
 });
 
-test("a second vote from the same position is named, not left as error 0", () => {
+test("a taken account id is named, not left as error 0", () => {
   // Anchor's `init` on an existing account surfaces as system program error 0.
   // The system program has no IDL, so without a case for it this decodes to
   // nothing — and it is the most reachable failure in the whole UI.
@@ -87,6 +87,27 @@ test("a second vote from the same position is named, not left as error 0", () =>
 
   assert.match(decoded.message, /already exists/);
   assert.equal(decoded.program, "system");
+
+  // It has to cover proposals too, and that is not a completeness reflex.
+  // `create_proposal` has an `UnexpectedProposalId` check that looks like it
+  // catches a lost race and does not — the proposal PDA is seeded on the id, so
+  // `init` refuses the occupied account before the handler runs. This message
+  // is the only thing that explains that case.
+  assert.match(decoded.message, /proposal id/);
+});
+
+test("an id ahead of the counter is the case the program's own error covers", () => {
+  // The other half of the same story: being *ahead* of `realm.proposal_count`
+  // does reach the handler, and it is `UnexpectedProposalId` rather than the
+  // `MathOverflow` it reported until this flow was written.
+  const declared = (governance.errors ?? []).find((e) => e.name === "UnexpectedProposalId");
+  assert.ok(declared, "the governance program no longer declares UnexpectedProposalId");
+
+  const decoded = decodeTransactionError({ InstructionError: [0, { Custom: declared.code }] }, [
+    `Program ${governance.address} failed: custom program error: 0x0`,
+  ]);
+  assert.match(decoded.message, /proposal_count/);
+  assert.equal(decoded.program, "helix_governance");
 });
 
 test("an unrecognised code keeps its number instead of being explained away", () => {

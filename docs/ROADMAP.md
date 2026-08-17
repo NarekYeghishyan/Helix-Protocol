@@ -363,7 +363,7 @@ hard to predict from outside.
 |---|---|---|---|
 | 5.1 | Next.js app, wallet-adapter, cluster switching | 1d | ✅ Done |
 | 5.2 | Stake / unstake / claim flows with simulation before signing | 2d | ✅ Done — plus `close_position`; 72 dashboard tests |
-| 5.3 | Governance UI: proposal list, vote, lifecycle state, timelock countdown | 2d | ✅ Done — plus the three permissionless transitions; creating a proposal is not built |
+| 5.3 | Governance UI: proposal list, vote, lifecycle state, timelock countdown | 2d | ✅ Done — plus the permissionless transitions and proposal creation, with the action form derived from the IDL |
 | 5.4 | Analytics views over the Phase 4 API | 1–2d | ✅ Done |
 
 **5.1 and 5.4 are the half that does not need a chain**, and they were built first for that
@@ -416,8 +416,26 @@ presents an expired proposal as perpetually ready.
 mint or a minter the *vote* chose, and a generic button would mean the UI picking accounts a
 proposal already decided — so they are refused with that reason rather than hidden.
 
-What is not built is proposal *creation*. It needs a position above `min_weight_to_propose`
-and a `ProposalAction` to be composed, which is a form rather than a button.
+**Proposal creation is built, and the form is derived from the IDL rather than typed out.**
+`governance/README.md` justifies the closed `ProposalAction` enum by saying the set of things
+governance can do is fixed at deploy time and *visible in the IDL*, so a voter reads the
+variant and knows the blast radius. A hand-written form would be a second copy of that set —
+the copy that goes stale, leaving a variant added to the program unreachable with nothing
+failing. So the form reads the variants and their field types out of the IDL and renders
+whatever it finds, including one level of nested struct for `UpdateRealmParams`.
+
+It refuses to guess semantics. An `i64` is rendered as seconds with **both** readings shown,
+because `end_ts` is a moment and `epoch_duration` is a length and the IDL cannot tell them
+apart; picking one would be right most of the time.
+
+**Writing it found a defect, and fixing that found a better one.** `create_proposal` reported
+a wrong `proposal_id` as `MathOverflow` — the same defect `stake.rs` had corrected for
+`position_id` and never carried across. It is `UnexpectedProposalId` now. But the first test
+written for it asserted the obvious case, two proposers racing for one id, and failed: the
+proposal PDA is seeded on the id, so `init` refuses the loser's account before the handler
+runs. The check cannot fire for a race at all — what it catches is an id *ahead* of the
+counter. Both comments were rewritten to say which path reaches which, and the details are in
+[TESTING.md](./TESTING.md#the-check-that-looked-like-it-caught-a-race-and-did-not).
 
 Two things the UI does that most dashboards do not, both inherited from decisions the API
 already made:

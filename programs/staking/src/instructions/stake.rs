@@ -81,9 +81,18 @@ pub fn stake(ctx: Context<Stake>, position_id: u64, amount: u64, tier: LockTier)
     require!(!ctx.accounts.pool.paused, StakingError::DepositsPaused);
     require!(amount >= MIN_STAKE_AMOUNT, StakingError::BelowMinimumStake);
     // Not `MathOverflow`, which this reported until `close_position` gave the
-    // check a second way to be hit. Passing a stale id is an ordinary race
-    // between two of your own transactions, and telling the user their
-    // arithmetic overflowed sends them looking in the wrong place entirely.
+    // check a second way to be hit. Telling someone their arithmetic overflowed
+    // sends them looking in the wrong place entirely.
+    //
+    // Two paths reach here, and neither is the one this most looks like. Losing
+    // a race to another staker does *not*: the position PDA is seeded on
+    // `position_id`, so the loser's account already exists and `init` refuses it
+    // in `try_accounts` before this line runs, as system-program error 0. What
+    // reaches here is an id *ahead* of the counter — a client computing it from
+    // anything but a fresh read of `pool.position_count` — and an id *below* it
+    // whose account `close_position` has since freed, which is the case that
+    // must stay refused: recycling an id would let a new position land beneath
+    // an existing governance snapshot (see `close_position.rs`).
     require_eq!(
         position_id,
         ctx.accounts.pool.position_count,

@@ -2678,6 +2678,11 @@ const idl: Idl = {
       "code": 6021,
       "name": "MathOverflow",
       "msg": "Arithmetic overflow"
+    },
+    {
+      "code": 6022,
+      "name": "UnexpectedProposalId",
+      "msg": "proposal_id must equal the realm's current proposal_count"
     }
   ],
   "types": [
