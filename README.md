@@ -9,12 +9,13 @@ Rust with the Anchor framework.
 [![License](https://img.shields.io/badge/license-Apache--2.0-green)](./LICENSE)
 
 > **Status: unaudited. Not deployed to a public cluster.** All four programs build to BPF
-> and pass 241 tests locally, including runtime tests that execute the full governance →
+> and pass 244 tests locally, including runtime tests that execute the full governance →
 > treasury authority chain and a real Token-2022 mint with transfer fees, six that run
 > against a local validator with the programs actually deployed, and ten that persist and
-> reload the projection through a real Postgres. A devnet deployment and the dashboard's
-> write flows are scoped in [ROADMAP.md](./docs/ROADMAP.md). Nothing here has held real
-> value. See [SECURITY.md](./SECURITY.md).
+> reload the projection through a real Postgres. The dashboard adds 66 more over the
+> transaction builders. A devnet deployment is scoped in
+> [ROADMAP.md](./docs/ROADMAP.md), and no transaction has yet been signed by a browser
+> wallet. Nothing here has held real value. See [SECURITY.md](./SECURITY.md).
 
 Four programs that compose into one system. Nothing here wraps an existing protocol —
 the reward accounting, the vote-weight mechanism and the governance state machine are
@@ -133,7 +134,7 @@ programs/
   treasury/        vault, vesting streams, per-epoch spend limits
 indexer/           event decoding, reorg-safe ingestion, projection, read API
 ops/               the atomic bootstrap as a plan, plus the audit that verifies it landed
-app/               Next.js dashboard and wallet connection over that API
+app/               Next.js dashboard: analytics over that API, write flows over the chain
 tests/integration/ runtime tests against the real BPF programs via LiteSVM
 scripts/           toolchain bootstrap, program keys, documentation link check
 docs/              the five deliverables above
@@ -148,9 +149,10 @@ one is Anchor's.
 ```bash
 anchor build 2>&1 | tee build.log  # not optional — see below
 grep -i "stack offset" build.log   # must be empty — anchor build exits 0 even when it isn't
-cargo test --workspace             # 241 tests: unit + doc + runtime
+cargo test --workspace             # 244 tests: unit + doc + runtime
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo fmt --all -- --check
+cd app && npm test                 # 66 more, over the transaction builders
 ```
 
 `anchor build` first, every time. The runtime tests load `.so` files from `target/deploy`
@@ -212,10 +214,10 @@ be folded into state without recomputation is an incomplete event** — now appl
 
 ## Dashboard
 
-[`app/`](./app) — Next.js, wallet connection, cluster switching, and analytics over the
-read API.
+[`app/`](./app) — Next.js, wallet connection, cluster switching, analytics over the read
+API, and the write flows: stake, unstake, claim, close, vote.
 
-Two things it does that most dashboards do not:
+Four things it does that most dashboards do not:
 
 **Finality is on screen.** The API answers from either the projection the cluster will not
 take back or the one a fork still might, and every panel shows which, the slot, and how
@@ -227,11 +229,25 @@ seen this address" and "this pool genuinely has no stakers" are distinct facts. 
 table for all three is lying by omission — and with no ingestion source wired yet, every
 panel is currently in one of the first two.
 
+**Transactions are built from the IDL, not from a copy of it.** Discriminators, account
+order, writable and signer flags, PDA seeds and error codes all come from what `anchor
+build` generates. The alternative — a small hand-written builder per instruction — fails
+silently, because Anchor's account list is positional and carries no names on the wire: a
+client using yesterday's order does not fail to encode, it names the right accounts in the
+wrong slots and asks a wallet to sign that. `idl_sync.rs` fails if the checked-in copy stops
+matching, and the flow tests transcribe the account lists from the `#[derive(Accounts)]`
+structs so the two checks cannot agree by construction.
+
+**Nothing is signed before it has been simulated** — and the simulated transaction is the
+signed one, held as a single instruction array rather than rebuilt on confirm. What a claim
+pays out is read from the `RewardsClaimed` the simulated program emitted, not recomputed off
+chain; `0x1771` is rendered as "Position is still locked".
+
 Amounts are rendered through `BigInt`. The API sends them as strings because `u64` exceeds
 what a JSON number holds exactly, and `Number(...)` on the client throws that away.
 
-The transaction flows (stake, claim, vote) are not built: they need a deployment to be
-worth writing against. → [`app/README.md`](./app/README.md).
+Not yet driven from a browser wallet — the remaining gap, and it needs a person rather than
+another test. → [`app/README.md`](./app/README.md).
 
 ## License
 

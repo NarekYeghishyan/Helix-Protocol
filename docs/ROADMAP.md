@@ -22,7 +22,7 @@ says how much to trust each one.
 | 2 | Integration tests against a validator | ✅ Done — 74 runtime tests; found and fixed F-8 |
 | 3 | Devnet deployment + verifiable builds | ◐ Bootstrap measured, planned, *verifiable after the fact*, and now submitted to a real cluster; F-9 fixed; the devnet deploy itself is blocked on funding |
 | 4 | Indexer + analytics API | ✅ Done — decode, ingestion, the RPC source, the read API and the Postgres binding, each tested against the real thing |
-| 5 | Dashboard + wallet integration | ◐ Analytics views, wallet connection and cluster switching built; the write flows are the next phase |
+| 5 | Dashboard + wallet integration | ◐ Analytics, wallet, and every write flow — stake, unstake, claim, close, vote — built, simulated before signing and tested from both sides of the IDL; none has been driven from a browser wallet |
 | 6 | Fuzzing + external audit prep | ✅ Done — compute benchmarked, fuzzing found F-10, audit scoped in [AUDIT-READINESS.md](./AUDIT-READINESS.md) |
 | 7 | Governance migration (burn the admin keys) | ◐ 7.1 and 7.2 reachable and tested — F-11 fixed; 7.3 needs a deployment |
 
@@ -56,15 +56,35 @@ says nothing about a *new type*, because nothing in Rust enumerates the types in
 That hole is closed by checking the list against the IDLs `anchor build` generates, which
 cannot drift from the programs the way a hand-written list can.
 
-**The largest unknown now is the write path from a browser.** Every flow that spends,
-stakes or votes has been driven from Rust and never from a wallet, and the failure modes
-there — a simulation that disagrees with the signed transaction, an Anchor error code
-rendered as `0x1771`, a stale blockhash — are not reachable from the test suite. Phase 5.2
-and 5.3 are now unblocked: they were waiting on a deployment, and a local validator is one.
+The write path from a browser was the next one, and most of it is retired. What made it an
+unknown was never the buttons; it was that **no client had ever encoded an instruction for
+these programs.** That is now done, and done in the way the rest of the repo settled on
+after being burnt: the dashboard builds every transaction from the IDLs `anchor build`
+generates — discriminators, account order, writable and signer flags, PDA seeds, error
+codes — rather than from a hand-written restatement of them.
 
-A dashboard is also what a stakeholder can see, so finishing it now happens to be both the
-visible choice and the correct one, which has not been true at any earlier point in this
-roadmap.
+The reason is a hazard worse in kind than the one `event_coverage.rs` exists for. A
+hand-maintained event list that goes stale reports `Anomaly::UndecodableData`: bad, and
+*visible*. Anchor's account list is positional and carries no names on the wire, so a client
+using yesterday's order does not fail to encode — it builds a well-formed transaction naming
+the right accounts in the wrong slots and asks a wallet to sign it. In `unstake` the vault
+and the owner's token account are adjacent, and in `stake` they appear in the opposite
+order.
+
+That leaves one seam, because `target/` is gitignored and the dashboard's CI job has no
+Anchor toolchain: the IDLs are a *copy*, under `app/src/idl/`.
+[`idl_sync.rs`](../tests/integration/tests/idl_sync.rs) runs in the job that does have
+`anchor build` output and fails if a copy has stopped matching. Swapping those two accounts
+in the copy fails it — and independently fails `actions.test.ts`, whose account lists are
+transcribed from the `#[derive(Accounts)]` structs by hand precisely so the two checks
+cannot agree with each other by construction.
+
+**What is left of the unknown is the extension itself.** Nothing here has been through a
+browser wallet: `node --test` runs against hand-written vectors, and simulation is a node
+executing a message nobody signed. An adapter that re-serialises a v0 message, a wallet that
+refuses `replaceRecentBlockhash`, a popup dismissed mid-flow — none is reachable from CI.
+That is a smaller and much better-defined gap than "the write path", and it is the one that
+needs a human with a wallet rather than another test.
 
 ---
 
@@ -309,14 +329,41 @@ retention, webhook reliability) that is hard to predict from outside.
 | Milestone | Deliverable | Est. | Status |
 |---|---|---|---|
 | 5.1 | Next.js app, wallet-adapter, cluster switching | 1d | ✅ Done |
-| 5.2 | Stake / unstake / claim flows with simulation before signing | 2d | ⬜ **Now the priority** — unblocked by the local validator |
-| 5.3 | Governance UI: proposal list, vote, lifecycle state, timelock countdown | 2d | ◐ Proposal list built; voting is next |
+| 5.2 | Stake / unstake / claim flows with simulation before signing | 2d | ✅ Done — plus `close_position`; 66 tests |
+| 5.3 | Governance UI: proposal list, vote, lifecycle state, timelock countdown | 2d | ◐ Voting built, with both eligibility gates explained on screen; creating and advancing proposals is not |
 | 5.4 | Analytics views over the Phase 4 API | 1–2d | ✅ Done |
 
 **5.1 and 5.4 are the half that does not need a chain**, and they were built first for that
-reason. The write flows were blocked on a deployment; they no longer are, because
-`solana-test-validator` is one. What is left is the part of the system that has never been
-driven from a wallet, which is now the largest unknown in the project.
+reason. The write flows are now built too, and they read the cluster directly rather than
+the indexer — a split worth stating, because the dashboard now has two data sources on one
+page. A staker who cannot withdraw because an analytics service is down has been given
+something worse than no dashboard; and `pool.position_count` is a *seed* for the account
+`stake` creates, so a value one slot stale produces a transaction that fails on an account
+collision. The read API is right to answer with its uncertainty attached. This is the one
+caller that cannot use an answer like that.
+
+**The recommendation this phase was carrying is now implemented, and one part of it turned
+out to be the interesting part.** Simulating before signing is easy. Making the simulated
+transaction *be* the signed transaction is the part that goes wrong by accident: build the
+instructions in one place to preview them and in another to send them, and the preview stops
+meaning anything while still looking correct. So a `Prepared` holds the instruction array
+and both paths take that same object.
+
+The second decision is the one that reuses a lesson from Phase 4.0. "How much will I
+receive?" is answered by decoding the `RewardsClaimed` event the *simulated* program emitted
+— not by reimplementing `Position::earned` in TypeScript. That reimplementation is twenty
+lines and is exactly the second implementation `Unstaked` was given a `weighted_amount`
+field to avoid ([W-8](./ARCHITECTURE-REVIEW.md#weaknesses)). A second implementation agrees
+until one of them changes.
+
+**5.3 is voting and not the rest, and the split is deliberate.** Voting is the flow whose
+two gates cannot be guessed from a proposal list: `lock_end >= voting_ends_at` and
+`position_id < position_count_snapshot` — the second being the electorate gate
+[F-10](./SECURITY-ASSESSMENT.md#f-10--post-snapshot-weight-could-vote) installed. A UI that
+shows a vote button for every position teaches people to click it and read `0x1775`, so each
+position is listed with the reason it can or cannot vote. Creating proposals and advancing
+them through finalize/queue/execute are permissionless single-account calls that carry no
+comparable trap, and the same plumbing carries them when they are wanted.
 
 Two things the UI does that most dashboards do not, both inherited from decisions the API
 already made:
@@ -334,9 +381,18 @@ precisely because `u64` exceeds what a JSON number represents exactly, and `Numb
 the client throws that away. Writing the test for it found a real bug — `BigInt("")` is
 `0n` rather than a throw, so a missing field rendered as a confident zero.
 
-**Recommendation:** simulate every transaction before presenting it for signature, and
-surface the decoded Anchor error rather than a raw code. The specific error enums exist
-so the UI can say "position is still locked" instead of "custom program error: 0x1771".
+**Recommendation, now implemented:** simulate every transaction before presenting it for
+signature, and surface the decoded Anchor error rather than a raw code. The specific error
+enums exist so the UI can say "position is still locked" instead of "custom program error:
+0x1771".
+
+Doing it found one case the recommendation did not cover. Anchor's `init` on an account that
+already exists surfaces as *system program* error 0, and the system program has no IDL to
+look a code up in — so the most reachable failure in the whole UI, a second vote from the
+same position, decoded to nothing at all. It is named explicitly. The framework's own error
+table is deliberately short rather than copied wholesale from Anchor's source: a wrong name
+is worse than a number, and an unrecognised code is reported as "Anchor constraint error
+2222" rather than guessed at.
 
 ## Phase 6 — Fuzzing and audit prep
 

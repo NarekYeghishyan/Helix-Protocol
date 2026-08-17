@@ -65,6 +65,11 @@ jobs:
 
       # Node's built-in runner over TypeScript directly — no test framework and
       # no build step, which is why this runs before the compile.
+      #
+      # These tests cover the transaction builders, and they cover them without
+      # an Anchor toolchain: the IDLs are checked in under app/src/idl. That the
+      # checked-in copies are still what `anchor build` generates is asserted by
+      # `idl_sync.rs` in the job below, which is the only one that can see both.
       - run: npm test
       - run: npm run typecheck
       - run: npm run build
