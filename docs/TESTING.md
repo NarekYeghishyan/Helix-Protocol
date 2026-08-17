@@ -10,7 +10,7 @@ is bounded by the honesty of its coverage claims.
 ```bash
 anchor build                                                  # required first — the
                                                               # runtime tests load .so files
-cargo test --workspace                                        # 244 tests: unit + doc + runtime
+cargo test --workspace                                        # 254 tests: unit + doc + runtime
 cd app && npm test                                            # 66 dashboard tests, no framework
 cargo test -p helix-staking --lib                             # one program's unit tests
 cargo test -p helix-staking --lib -- --nocapture rounding     # one test, with output
@@ -27,7 +27,7 @@ its I/O and are all off by default, so a plain `clippy` never looks at any of th
 
 ### Running the live tests
 
-Sixteen tests need something outside the process — a validator or a database. All of them
+Eighteen tests need something outside the process — a validator or a database. All of them
 **skip and pass** when the relevant environment variable is unset, which is why the count
 above is the same either way. That is deliberate: a suite that fails on a clean checkout
 trains people to ignore red, and `#[ignore]` hides the reason behind a flag someone has to
@@ -83,10 +83,10 @@ code you did not expect.
 
 ## What is covered
 
-**127 unit tests** over pure functions and state machines, **98 runtime tests** against the
-real BPF programs under LiteSVM, **16 live tests** against a validator and a Postgres
+**135 unit tests** over pure functions and state machines, **98 runtime tests** against the
+real BPF programs under LiteSVM, **18 live tests** against a validator and a Postgres
 instance, and **66 dashboard tests** under `node --test`. `cargo test --workspace` reports
-244, the balance being doctests and the two checks that compare generated build artifacts
+254, the balance being doctests and the two checks that compare generated build artifacts
 against hand-maintained lists — `event_coverage.rs` and `idl_sync.rs`.
 
 The tiers are not a hierarchy but a statement about what each can prove. Unit tests reach
@@ -117,6 +117,7 @@ compares against the IDL proves only that a file was read twice.
 | Log attribution | 10 | CPI depth tracking, foreign programs ignored, truncation and undecodable payloads reported, compute lines not mistaken for frame exits |
 | Projection | 6 | Idempotent replay, identical events in one transaction kept distinct, orphan tracking, APR undefined on an empty pool |
 | Ingestion | 9 | Reorg above the finality watermark reverted and replaced, contradiction below it refused, paged backfill equals a single pass, cursor resumption, anomalies surfaced |
+| Descent | 8 | A backfill reaches genesis and stops there; page size does not change the history it yields; it resumes from a persisted position; it refuses the unfinalised tail and moves past it anyway; a page with nothing to fold is not genesis; a source that does not descend is refused; a replayed descent equals a forward pass, and folding one in *arrival* order does not |
 | Deployment plan | 9 | The payer ends up controlling nothing, addresses derive from the mint alone, the transaction fits a packet, the JSON form keeps signer and writable flags, and the post-deploy audit names every authority that drifted — including the guardian |
 | Position closing | 3 | An empty position is closable and a weight-bearing one is not; settling an empty position is a no-op at any accumulator value, which is why `close_position` needs no settlement step |
 | Read API | 6 | The two finality views differ and each says which it is, a u64 past 2^53 survives a JSON round trip, undefined APR is null, small shares do not round away |
@@ -189,7 +190,7 @@ Against real infrastructure, not LiteSVM. Skipped unless the environment names i
 
 | File | Tests | Needs | What is asserted |
 |---|---|---|---|
-| `rpc_source_live.rs` | 6 | `HELIX_RPC_URL` | Phase 4.1 — a projection built over `getSignaturesForAddress` + `getTransaction` matches the accounts on chain; ledger order survives *inside* a slot; a rolled-back transaction whose log still carries its events contributes nothing; a cursor advanced by real finality neither replays nor reads as a fork; the finalized watermark is read from the cluster and moves; one transaction reported under three addresses is folded once |
+| `rpc_source_live.rs` | 8 | `HELIX_RPC_URL` | Phase 4.1 — a projection built over `getSignaturesForAddress` + `getTransaction` matches the accounts on chain; ledger order survives *inside* a slot; a rolled-back transaction whose log still carries its events contributes nothing; a cursor advanced by real finality neither replays nor reads as a fork; the finalized watermark is read from the cluster and moves; one transaction reported under three addresses is folded once |
 | `store_postgres.rs` | 10 | `HELIX_DATABASE_URL` | Phase 4.2 — a restart reaches the state it saved, field by field across every projection map; a replayed batch changes nothing; a redelivery *after* a restart does not double-count; a backfill at an older slot cannot overwrite a newer live write; a commit that fails part way leaves the cursor and the rows where they were; a closed position's row goes with the account while `position_count` does not; a u64 above 2^63 survives the database; nothing unfinalised is written; a database at another schema version is refused; an anomaly is stored with the signature that makes it actionable |
 
 The RPC set is also where `helix_ops::plan` — the bootstrap an operator sends — is
@@ -550,6 +551,31 @@ mid-slot expressible — but the earlier claim that the signature form was *wron
 itself wrong, and is corrected in [`rpc.rs`](../indexer/src/rpc.rs). **A mutation that
 survives is a result, not a gap to be papered over with a test that manufactures a
 failure.**
+
+### The descent, mutated before believing it
+
+Phase 4.3 adds two live tests, and after the section above they were mutation-tested before
+being trusted. Both hazards are in `fetch_before`, and both produce a projection that is
+merely incomplete rather than one that errors:
+
+```text
+mutation                                    caught by
+-----------------------------------------------------------------------------
+page handed back newest-first               a_descent_sees_the_same_history…
+next page's bound taken before truncation   a_descent_sees_the_same_history…
+                                            a_descent_resumes_from_its_persisted_position
+```
+
+The first is worth recording for *how* it was caught. The projection comparison did **not**
+fail — reversing a page changes the order events are folded in, and the projection assigns
+running totals, so a small reversed page reaches the same state. What failed was the
+separate assertion that the descent's slots ascend. That is the same property the live
+tests learned the hard way in the section above, arriving from the other direction: an
+ordering bug in a projection that assigns is invisible in the projection, so it has to be
+asserted about the *sequence* and not about the result.
+
+The second is caught twice, which is the right number for a paging bug: the history comes
+back short, and a resumed descent no longer rejoins where it stopped.
 
 ### The storage tests, mutated the same way
 

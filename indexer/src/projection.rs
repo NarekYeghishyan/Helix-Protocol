@@ -225,6 +225,33 @@ impl Analytics {
             .count()
     }
 
+    /// Rebuilds a projection from a chronological stream of transactions.
+    ///
+    /// This is what a completed backfill is *for*. A descending traversal cannot
+    /// fold into a live projection as it goes — most of this type assigns running
+    /// totals the events carry, so an older event applied after a newer one
+    /// overwrites the newer value with the older one, silently. See
+    /// [`crate::ingest::Backfill`].
+    ///
+    /// So the backfill writes rows and this reads them back in order. The input
+    /// must be ledger-ordered; that is a real precondition and not a stylistic
+    /// one, and it is why the caller is a `SELECT ... ORDER BY slot, signature,
+    /// log_index` rather than an iterator over whatever the store returns.
+    ///
+    /// Deliberately takes an iterator rather than a slice: the whole history of a
+    /// program does not have to fit in memory at once for this to work, and the
+    /// only state it accumulates is the projection itself.
+    pub fn replay<'a, I>(transactions: I) -> Self
+    where
+        I: IntoIterator<Item = (&'a str, &'a [EmittedEvent])>,
+    {
+        let mut analytics = Self::new();
+        for (signature, events) in transactions {
+            analytics.apply_transaction(signature, events);
+        }
+        analytics
+    }
+
     /// Folds in a single event. Returns false if it had already been applied.
     pub fn apply(&mut self, id: EventId, event: &HelixEvent) -> bool {
         if !self.applied.insert(id.clone()) {

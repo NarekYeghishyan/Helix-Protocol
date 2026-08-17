@@ -60,11 +60,14 @@ pub mod store;
 
 pub use api::{Api, Finality};
 pub use event::{HelixEvent, Program};
-pub use ingest::{IngestError, Ingestor, PollOutcome, SettledTransaction};
+pub use ingest::{Backfill, BackfillBatch, IngestError, Ingestor, PollOutcome, SettledTransaction};
 pub use logs::{parse, Anomaly, EmittedEvent, ParsedLogs};
 pub use projection::{Analytics, EventId};
 #[cfg(feature = "rpc")]
 pub use rpc::{Commitment, RpcError, RpcLogSource};
-pub use source::{Cursor, LogSource, TransactionLogs};
+pub use source::{
+    Cursor, DescendingSource, Descent, DescentPage, LogSource, PageBound, PageRange,
+    TransactionLogs,
+};
 #[cfg(feature = "postgres")]
 pub use store::{Restored, Store, StoreError};

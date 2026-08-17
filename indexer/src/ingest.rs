@@ -38,7 +38,7 @@
 
 use crate::logs::{parse, Anomaly, EmittedEvent};
 use crate::projection::Analytics;
-use crate::source::{Cursor, LogSource, TransactionLogs};
+use crate::source::{Cursor, DescendingSource, Descent, LogSource, TransactionLogs};
 
 /// A transaction that has been applied but is not yet final.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -120,6 +120,161 @@ pub enum IngestError<E> {
         slot: u64,
         signature: String,
     },
+}
+
+/// What one [`Backfill::step`] read.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct BackfillBatch {
+    /// Settled transactions from this page, oldest first.
+    ///
+    /// The same type a poll emits, and for the same reason: this is exactly what
+    /// a durable store may write. What a store must **not** do with them is fold
+    /// them into a live projection — see [`Backfill`].
+    pub transactions: Vec<SettledTransaction>,
+    /// Transactions this page skipped for being above the finality watermark.
+    ///
+    /// Not an error and not silent. A descent that starts at the tip necessarily
+    /// begins inside the unfinalised range, and those transactions belong to the
+    /// live stream; counting them makes the hand-off visible rather than
+    /// assumed.
+    pub skipped_unfinalized: usize,
+    /// True once the descent has reached the beginning of history.
+    pub complete: bool,
+}
+
+/// A descending traversal, from the tip toward genesis.
+///
+/// # Why this is not just `Ingestor` run backwards
+///
+/// The projection is built to be replay-safe by *assignment*: events carry
+/// running totals, and folding one twice sets the same field to the same value.
+/// That property is what makes redelivery harmless, and it depends entirely on
+/// events arriving in ledger order. Fold an older `RewardRateChanged` after a
+/// newer one and the newer rate is simply overwritten by the older — no error, no
+/// anomaly, a plausible wrong number.
+///
+/// So a backfill cannot fold into the live projection as it goes, and the fix is
+/// not to make the fold order-independent. It is to send the backfill somewhere
+/// order *does not matter*: the `events` table, whose key is
+/// `(signature, log_index)` and whose stated purpose is that everything else is
+/// derivable from it. The projection is then rebuilt from those rows in slot
+/// order — see [`Analytics::replay`] — rather than being nudged backwards.
+///
+/// That is why [`BackfillBatch`] carries [`SettledTransaction`]s and no
+/// projection at all. A `Backfill` that owned an `Analytics` would invite exactly
+/// the fold this type exists to prevent.
+///
+/// # Where it meets the live stream
+///
+/// The live cursor never exceeds the finality watermark, and this refuses to emit
+/// anything above it. So the live stream owns `[cursor, tip]` and the descent owns
+/// `[genesis, descent)` — and they overlap in the middle rather than meeting
+/// exactly, which is fine because both write the same idempotent rows. Requiring
+/// them to meet exactly would need coordination neither has.
+#[derive(Clone, Debug, Default)]
+pub struct Backfill {
+    descent: Descent,
+}
+
+impl Backfill {
+    /// Starts at the tip.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Resumes from a persisted descent — the `backfill` row of `cursors`.
+    pub fn resume_at(descent: Descent) -> Self {
+        Self { descent }
+    }
+
+    pub fn descent(&self) -> &Descent {
+        &self.descent
+    }
+
+    /// Whether there is anything left to read.
+    pub fn is_complete(&self) -> bool {
+        self.descent.complete
+    }
+
+    /// Reads one page older than the current position.
+    ///
+    /// Returns an empty, `complete` batch once genesis is reached, and keeps
+    /// returning one thereafter — a caller looping until `complete` terminates,
+    /// and a caller that keeps stepping wastes a request rather than restarting
+    /// from the tip.
+    pub fn step<S: DescendingSource>(
+        &mut self,
+        source: &mut S,
+        limit: usize,
+    ) -> Result<BackfillBatch, IngestError<S::Error>> {
+        if self.descent.complete {
+            return Ok(BackfillBatch {
+                complete: true,
+                ..Default::default()
+            });
+        }
+
+        let finalized_slot = source.finalized_slot().map_err(IngestError::Source)?;
+        let page = source
+            .fetch_before(&self.descent, limit)
+            .map_err(IngestError::Source)?;
+
+        // Nothing older exists at all. Genesis, and the only way this terminates.
+        //
+        // Note that this is `covered`, not `transactions` — a page of nothing but
+        // failed transactions covers a range and yields no transactions, and
+        // reading that as the end of history would stop the descent early while
+        // reporting the rest as complete. See `DescentPage`.
+        let Some(covered) = page.covered else {
+            self.descent.complete = true;
+            return Ok(BackfillBatch {
+                complete: true,
+                ..Default::default()
+            });
+        };
+
+        // A source that hands back something at a higher slot than the bound has
+        // either ignored it or is serving a different ledger. Either way the next
+        // step would ask the same question and get the same answer forever, so it
+        // is refused rather than absorbed — the same stance `poll` takes on a
+        // contradiction below its own cursor.
+        //
+        // Checked against the *newest* entry of the page. The oldest cannot catch
+        // it: a source ignoring the bound serves history from the tip, whose
+        // oldest entry is genesis and therefore below any bound at all.
+        if let Some(bound) = self.descent.slot {
+            if covered.newest.slot > bound {
+                return Err(IngestError::FinalizedHistoryChanged {
+                    slot: covered.newest.slot,
+                    signature: covered.newest.signature,
+                });
+            }
+        }
+
+        // Advance past the whole page, including anything filtered out of it.
+        self.descent.slot = Some(covered.oldest.slot);
+        self.descent.signature = Some(covered.oldest.signature);
+
+        let mut batch = BackfillBatch::default();
+        for tx in page.transactions {
+            // Above the watermark this is not history yet, and a row a fork can
+            // revoke is a number that was never true. The live stream has it.
+            if tx.slot > finalized_slot {
+                batch.skipped_unfinalized += 1;
+                continue;
+            }
+
+            let parsed = parse(&tx.logs);
+            batch.transactions.push(SettledTransaction {
+                signature: tx.signature,
+                slot: tx.slot,
+                events: parsed.events,
+                anomalies: parsed.anomalies,
+            });
+        }
+
+        Ok(batch)
+    }
 }
 
 pub struct Ingestor {
@@ -588,5 +743,302 @@ mod tests {
         // known to be incomplete.
         assert_eq!(outcome.settled.len(), 1);
         assert!(!outcome.settled[0].anomalies.is_empty());
+    }
+
+    // -------------------------------------------------------------- backfill
+    //
+    // A descent is the traversal the live poll cannot do, and its failure modes
+    // are different ones. What matters here is not that it reads transactions —
+    // that is `ScriptedSource` working — but that it terminates for the right
+    // reason, that paging it changes nothing, and that what comes out the far
+    // end reconstructs the projection a forward pass builds.
+
+    /// Runs a descent to completion and returns everything it yielded, oldest
+    /// first.
+    fn descend_all(source: &mut ScriptedSource, page: usize) -> Vec<SettledTransaction> {
+        let mut backfill = Backfill::new();
+        let mut collected: Vec<SettledTransaction> = Vec::new();
+
+        // Bounded, so a descent that fails to descend fails the test rather than
+        // hanging it.
+        for _ in 0..1_000 {
+            let batch = backfill.step(source, page).expect("step");
+            // Each page is older than the last, so prepending is what puts the
+            // whole descent back into ledger order.
+            let mut older = batch.transactions;
+            older.extend(collected);
+            collected = older;
+
+            if batch.complete {
+                return collected;
+            }
+        }
+        panic!("descent did not terminate");
+    }
+
+    #[test]
+    fn a_descent_reaches_genesis_and_stops() {
+        let mut f = Fixture::with_stakes(5);
+        f.source.finalize_through(5);
+
+        let mut backfill = Backfill::new();
+        assert!(!backfill.is_complete());
+
+        let mut collected: Vec<SettledTransaction> = Vec::new();
+        loop {
+            let batch = backfill.step(&mut f.source, 2).expect("step");
+            let mut older = batch.transactions;
+            older.extend(collected);
+            collected = older;
+            if batch.complete {
+                break;
+            }
+        }
+
+        assert_eq!(collected.len(), 5);
+        assert!(backfill.is_complete());
+        assert_eq!(backfill.descent().slot, Some(1));
+
+        // Stepping a finished descent is a no-op rather than a restart from the
+        // tip, which is the whole reason `complete` is stored rather than
+        // inferred from the cursor.
+        let fetches = f.source.fetches;
+        let after = backfill.step(&mut f.source, 2).expect("step");
+        assert!(after.complete);
+        assert!(after.transactions.is_empty());
+        assert_eq!(f.source.fetches, fetches, "a finished descent asked again");
+    }
+
+    #[test]
+    fn paging_a_descent_changes_nothing() {
+        // The mirror of `a_paged_backfill_matches_a_single_pass`, for the other
+        // direction. A page boundary is where an off-by-one silently drops or
+        // repeats a transaction, and the descent's bound is computed *from* the
+        // page rather than handed to it.
+        let single = {
+            let mut f = Fixture::with_stakes(9);
+            f.source.finalize_through(9);
+            descend_all(&mut f.source, 100)
+        };
+        assert_eq!(single.len(), 9);
+
+        for page in [1, 2, 3, 4, 8, 9] {
+            let mut f = Fixture::with_stakes(9);
+            f.source.finalize_through(9);
+            let paged = descend_all(&mut f.source, page);
+
+            assert_eq!(
+                paged.iter().map(|t| &t.signature).collect::<Vec<_>>(),
+                single.iter().map(|t| &t.signature).collect::<Vec<_>>(),
+                "page size {page} produced a different history",
+            );
+        }
+    }
+
+    #[test]
+    fn a_descent_resumes_where_it_stopped() {
+        let mut f = Fixture::with_stakes(6);
+        f.source.finalize_through(6);
+
+        let mut first = Backfill::new();
+        let batch = first.step(&mut f.source, 2).expect("step");
+        assert_eq!(batch.transactions.len(), 2);
+
+        // What a store would persist under the `backfill` cursor, and nothing
+        // else.
+        let persisted = first.descent().clone();
+        assert_eq!(persisted.slot, Some(5));
+        assert!(!persisted.complete);
+
+        let mut resumed = Backfill::resume_at(persisted);
+        let mut rest: Vec<SettledTransaction> = Vec::new();
+        loop {
+            let batch = resumed.step(&mut f.source, 2).expect("step");
+            let mut older = batch.transactions;
+            older.extend(rest);
+            rest = older;
+            if batch.complete {
+                break;
+            }
+        }
+
+        // Four left, and neither of the two already read.
+        assert_eq!(
+            rest.iter().map(|t| t.slot).collect::<Vec<_>>(),
+            vec![1, 2, 3, 4]
+        );
+    }
+
+    #[test]
+    fn a_descent_will_not_claim_the_unfinalised_tail() {
+        // The hand-off. A descent starts at the tip, which is inside the range
+        // the live stream owns, and a row a fork can still revoke is a number
+        // that was never true. Skipped rather than refused, and counted rather
+        // than silent.
+        let mut f = Fixture::with_stakes(6);
+        f.source.finalize_through(4);
+
+        let mut backfill = Backfill::new();
+        let first = backfill.step(&mut f.source, 3).expect("step");
+
+        assert_eq!(
+            first.skipped_unfinalized, 2,
+            "slots 5 and 6 are not history"
+        );
+        assert_eq!(
+            first
+                .transactions
+                .iter()
+                .map(|t| t.slot)
+                .collect::<Vec<_>>(),
+            vec![4]
+        );
+
+        // And the descent moved past them regardless, so it does not sit on the
+        // tail waiting for it to finalise. The live stream owns that range.
+        assert_eq!(backfill.descent().slot, Some(4));
+    }
+
+    #[test]
+    fn a_page_with_nothing_to_fold_is_not_genesis() {
+        // The bug the shape of `DescentPage` exists to prevent. On a real cluster
+        // a whole page can be transactions whose writes were rolled back —
+        // ordinary for a program someone is spamming — and reading "nothing to
+        // fold" as "no more history" stops the descent early while reporting the
+        // rest complete.
+        //
+        // `ScriptedSource` has no notion of a failed transaction, so the
+        // equivalent here is a page whose logs carry no events: same shape,
+        // nothing to fold, and history below it.
+        let pool = Pubkey::new_unique();
+        let mut source = ScriptedSource::new();
+        source.push(
+            "sig-oldest",
+            1,
+            staked_log(pool, Pubkey::new_unique(), Pubkey::new_unique(), 100),
+        );
+        source.push("sig-noise-a", 2, vec!["Program log: nothing".into()]);
+        source.push("sig-noise-b", 3, vec!["Program log: nothing".into()]);
+        source.finalize_through(3);
+
+        let all = descend_all(&mut source, 2);
+
+        // The first page folds nothing, and the descent still reaches slot 1.
+        assert_eq!(all.len(), 3);
+        assert!(
+            all.iter().any(|t| t.slot == 1 && !t.events.is_empty()),
+            "the descent stopped before the only transaction carrying events",
+        );
+    }
+
+    #[test]
+    fn a_source_that_does_not_descend_is_refused() {
+        // A bound the source ignores makes every step return the same page, and a
+        // loop over `complete` never ends. Refused for the same reason a
+        // contradiction below the live cursor is: the source is not serving the
+        // ledger this cursor belongs to.
+        let mut f = Fixture::with_stakes(4);
+        f.source.finalize_through(4);
+
+        let mut backfill = Backfill::resume_at(Descent {
+            slot: Some(2),
+            // Not in this ledger. `ScriptedSource` then serves from the tip,
+            // which is what an RPC provider does with an unknown `before`.
+            signature: Some("sig-from-another-cluster".into()),
+            complete: false,
+        });
+
+        let err = backfill
+            .step(&mut f.source, 10)
+            .expect_err("a non-descending source was accepted");
+        assert!(matches!(err, IngestError::FinalizedHistoryChanged { .. }));
+    }
+
+    #[test]
+    fn a_backfilled_history_replays_into_the_projection_a_forward_pass_builds() {
+        // The property the whole traversal exists for, and the reason `Backfill`
+        // carries no `Analytics` of its own.
+        let mut forward = Fixture::with_stakes(8);
+        forward.source.finalize_through(8);
+        let mut ingestor = Ingestor::new();
+        ingestor.poll(&mut forward.source, 100).expect("poll");
+
+        let mut backward = Fixture::with_stakes(8);
+        backward.source.finalize_through(8);
+        let descended = descend_all(&mut backward.source, 3);
+
+        let rebuilt = Analytics::replay(
+            descended
+                .iter()
+                .map(|t| (t.signature.as_str(), t.events.as_slice())),
+        );
+
+        assert_eq!(
+            rebuilt.applied_count(),
+            ingestor.finalized().applied_count()
+        );
+        assert_eq!(rebuilt.pools.len(), ingestor.finalized().pools.len());
+        assert_eq!(
+            rebuilt.tvl(&backward.pool),
+            ingestor.finalized().tvl(&forward.pool),
+        );
+    }
+
+    #[test]
+    fn folding_a_descent_in_arrival_order_is_the_bug_replay_avoids() {
+        // Why `BackfillBatch` carries transactions and not a projection.
+        //
+        // `RewardRateChanged` assigns a running value the event carries, which is
+        // what makes redelivery harmless — and what makes *out-of-order* delivery
+        // silently wrong. Applied newest-first, the older rate wins. No error, no
+        // anomaly, a plausible number.
+        let pool = Pubkey::new_unique();
+
+        let rate_log = |rate: u64| {
+            let event = helix_staking::events::RewardRateChanged {
+                pool,
+                old_rate: 0,
+                new_rate: rate,
+                reward_period_end: 0,
+                timestamp: 1,
+            };
+            let mut bytes = helix_staking::events::RewardRateChanged::DISCRIMINATOR.to_vec();
+            event.serialize(&mut bytes).expect("serialize");
+            vec![
+                format!("Program {} invoke [1]", helix_staking::ID),
+                format!("Program data: {}", BASE64.encode(bytes)),
+                format!("Program {} success", helix_staking::ID),
+            ]
+        };
+
+        let mut source = ScriptedSource::new();
+        source.push("sig-old-rate", 1, rate_log(100));
+        source.push("sig-new-rate", 2, rate_log(900));
+        source.finalize_through(2);
+
+        let descended = descend_all(&mut source, 1);
+
+        let ordered = Analytics::replay(
+            descended
+                .iter()
+                .map(|t| (t.signature.as_str(), t.events.as_slice())),
+        );
+        assert_eq!(
+            ordered.pools[&pool].reward_rate, 900,
+            "ledger order should leave the newest rate standing"
+        );
+
+        // And the same events in arrival order — newest page first — do not.
+        let arrival = Analytics::replay(
+            descended
+                .iter()
+                .rev()
+                .map(|t| (t.signature.as_str(), t.events.as_slice())),
+        );
+        assert_eq!(
+            arrival.pools[&pool].reward_rate, 100,
+            "if this ever reports 900, assignment stopped being order-dependent \
+             and `Analytics::replay`'s precondition needs revisiting"
+        );
     }
 }

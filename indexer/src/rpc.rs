@@ -53,7 +53,10 @@ use serde_json::{json, Value};
 use std::time::Duration;
 
 use crate::event::Program;
-use crate::source::{Cursor, LogSource, TransactionLogs};
+use crate::source::{
+    Cursor, DescendingSource, Descent, DescentPage, LogSource, PageBound, PageRange,
+    TransactionLogs,
+};
 
 /// How far the cluster has committed to a slot.
 ///
@@ -505,6 +508,113 @@ impl LogSource for RpcLogSource {
         self.call(
             "getSlot",
             json!([{ "commitment": Commitment::Finalized.as_str() }]),
+        )
+    }
+}
+
+impl DescendingSource for RpcLogSource {
+    /// One page older than `descent`, in ledger order.
+    ///
+    /// This is the traversal `getSignaturesForAddress` was actually designed for,
+    /// and it is why [`LogSource::fetch`] above has to work so hard: `before` and
+    /// `limit` together express "the newest N older than X" exactly, which is a
+    /// descent, and express "the oldest N newer than X" not at all.
+    ///
+    /// # Why the addresses are merged and then truncated, not truncated per address
+    ///
+    /// Each address is asked for its own newest `limit` below the bound, and the
+    /// union is then cut to the `limit` *newest* of the merged set. Cutting each
+    /// address to `limit` and concatenating would produce a page whose oldest
+    /// entries came from whichever address is sparsest — and the next page's bound
+    /// is the oldest of the page, so every denser address's history between the
+    /// two would be stepped straight over. The gap would never be revisited,
+    /// because a descent only ever goes down.
+    fn fetch_before(
+        &mut self,
+        descent: &Descent,
+        limit: usize,
+    ) -> Result<DescentPage, Self::Error> {
+        if limit == 0 {
+            return Ok(DescentPage::default());
+        }
+
+        let mut merged: Vec<SignatureInfo> = Vec::new();
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+        for address in self.addresses.clone() {
+            for info in self.signatures_before(address, descent.signature.as_deref(), limit)? {
+                if seen.insert(info.signature.clone()) {
+                    merged.push(info);
+                }
+            }
+        }
+
+        // Newest first, so truncation keeps the entries adjacent to where the
+        // descent already is. `sort_by_key` is stable, so each address's own
+        // order survives inside a slot — the same property `fetch` relies on, and
+        // for the same reason: a page ordering that varied between calls would be
+        // indistinguishable from history changing.
+        merged.sort_by_key(|s| std::cmp::Reverse(s.slot));
+        merged.truncate(limit);
+
+        // The range is taken here, from the truncated window and *before* failed
+        // transactions are dropped. Taking it after would make a page of nothing
+        // but failures look like genesis, and taking it before truncation would
+        // step over everything the `limit` cut off.
+        //
+        // `merged` is newest-first at this point, so the ends are the other way
+        // round from the vector's.
+        let bound = |s: &SignatureInfo| PageBound {
+            slot: s.slot,
+            signature: s.signature.clone(),
+        };
+        let covered = match (merged.last(), merged.first()) {
+            (Some(oldest), Some(newest)) => Some(PageRange {
+                oldest: bound(oldest),
+                newest: bound(newest),
+            }),
+            _ => None,
+        };
+
+        // A rolled-back transaction is in the ledger and did nothing. Its events
+        // are still in its log, so this filter is load-bearing rather than an
+        // optimisation.
+        merged.retain(|s| s.err.is_none());
+        merged.reverse();
+
+        Ok(DescentPage {
+            transactions: self.logs_for(&merged)?,
+            covered,
+        })
+    }
+}
+
+impl RpcLogSource {
+    /// The newest `limit` signatures for `address` strictly older than `before`,
+    /// newest first and unfiltered.
+    ///
+    /// A single request rather than a walk. `signatures_after` has to descend
+    /// repeatedly because it is chasing a bound somewhere *below* the tip and the
+    /// API only counts from the top; a descent is already pointed at the right
+    /// place, so one page is the whole answer and `max_scan` has nothing to
+    /// bound. This is the traversal the API was designed for.
+    fn signatures_before(
+        &mut self,
+        address: Pubkey,
+        before: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<SignatureInfo>, RpcError> {
+        let mut options = json!({
+            "limit": limit.min(self.page),
+            "commitment": self.commitment.as_str(),
+        });
+        if let Some(before) = before {
+            options["before"] = json!(before);
+        }
+
+        self.call(
+            "getSignaturesForAddress",
+            json!([address.to_string(), options]),
         )
     }
 }
