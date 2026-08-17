@@ -21,7 +21,10 @@ import { test } from "node:test";
 import { PublicKey } from "@solana/web3.js";
 
 import {
+  ADVANCE,
+  EXECUTION_GRACE_PERIOD,
   LOCK_TIERS,
+  buildAdvance,
   buildClaim,
   buildClosePosition,
   buildStake,
@@ -29,7 +32,9 @@ import {
   buildVote,
   poolAddress,
   positionAddress,
+  whyCannotAdvance,
   whyCannotVote,
+  type AdvanceKind,
 } from "./actions.ts";
 import type { Pool, Position, Proposal, Realm } from "./chain.ts";
 import {
@@ -436,6 +441,150 @@ test("the vote gates refuse exactly what the program refuses", () => {
   assert.match(
     whyCannotVote(proposal({ state: { kind: "Queued" } }), position(), now) ?? "",
     /is Queued, not open for voting/,
+  );
+});
+
+// --------------------------------------------------------- lifecycle moves
+
+test("the permissionless transitions take no signer at all", () => {
+  // `lifecycle.rs` is explicit that these are permissionless: the outcome of each
+  // is a pure function of state already on chain, and permissioning finalisation
+  // would let whoever held it strand a proposal in Voting forever. An account
+  // list with a signer in it would mean that had stopped being true.
+  const kinds: AdvanceKind[] = [
+    "activate_proposal",
+    "finalize_proposal",
+    "queue_proposal",
+    "execute_signal",
+  ];
+
+  for (const kind of kinds) {
+    const ix = buildAdvance({
+      realm: realm(),
+      proposal: proposal(),
+      payer: OWNER,
+      stakingPool: POOL,
+      kind,
+    }).instructions[0];
+
+    assert.ok(ix.programId.equals(GOVERNANCE_PROGRAM_ID));
+    assert.equal(
+      ix.keys.filter((k) => k.isSigner).length,
+      0,
+      `${kind} requires a signature it should not`,
+    );
+    // Only the proposal is written. A transition that wrote the realm would be
+    // changing the rules while applying them.
+    assert.deepEqual(
+      ix.keys.filter((k) => k.isWritable).length,
+      1,
+      `${kind} writes more than the proposal`,
+    );
+    assert.equal(ix.data.length, 8, `${kind} takes arguments`);
+  }
+});
+
+test("activate is the only transition that needs the pool", () => {
+  // It snapshots `total_weighted` and `position_count` — the quorum denominator
+  // and the electorate boundary. The other three read nothing outside the realm.
+  const activate = buildAdvance({
+    realm: realm(),
+    proposal: proposal({ state: { kind: "Draft" } }),
+    payer: OWNER,
+    stakingPool: POOL,
+    kind: "activate_proposal",
+  }).instructions[0];
+  assert.equal(activate.keys.length, 3);
+  assert.ok(activate.keys[2].pubkey.equals(POOL));
+
+  const finalize = buildAdvance({
+    realm: realm(),
+    proposal: proposal(),
+    payer: OWNER,
+    kind: "finalize_proposal",
+  }).instructions[0];
+  assert.equal(finalize.keys.length, 2);
+
+  // And building an activation without it is refused rather than sending a
+  // transaction missing an account.
+  assert.throws(
+    () =>
+      buildAdvance({
+        realm: realm(),
+        proposal: proposal(),
+        payer: OWNER,
+        kind: "activate_proposal",
+      }),
+    /needs the realm's staking pool/,
+  );
+});
+
+test("each transition is offered only from the state the program accepts", () => {
+  const now = 1_800_000_000n;
+  const states = ["Draft", "Voting", "Succeeded", "Queued"] as const;
+  const expected: Record<AdvanceKind, string> = {
+    activate_proposal: "Draft",
+    finalize_proposal: "Voting",
+    queue_proposal: "Succeeded",
+    execute_signal: "Queued",
+  };
+
+  for (const [kind, from] of Object.entries(expected) as [AdvanceKind, string][]) {
+    for (const state of states) {
+      // Clock conditions satisfied, so state is the only variable.
+      const p = proposal({
+        state: { kind: state },
+        voting_ends_at: now - 1n,
+        eta: now - 100n,
+      });
+      const reason = whyCannotAdvance(p, kind, now);
+
+      if (state === from) {
+        assert.equal(reason, null, `${kind} should be possible from ${state}`);
+      } else {
+        assert.match(reason ?? "", /only possible while the proposal is/);
+      }
+    }
+  }
+});
+
+test("finalize waits for the voting window, and the boundary is the program's", () => {
+  // `finalize_proposal` requires `now >= voting_ends_at`, inclusive.
+  const open = proposal({ voting_ends_at: 1_700_259_200n });
+  assert.match(
+    whyCannotAdvance(open, "finalize_proposal", 1_700_259_199n) ?? "",
+    /still open/,
+  );
+  assert.equal(whyCannotAdvance(open, "finalize_proposal", 1_700_259_200n), null);
+});
+
+test("execution is refused before the timelock and after the grace period", () => {
+  // `authorize_execution` requires `now >= eta` and `now <= eta + 14 days`.
+  const queued = proposal({ state: { kind: "Queued" }, eta: 1_800_000_000n });
+
+  assert.match(whyCannotAdvance(queued, "execute_signal", 1_799_999_999n) ?? "", /not elapsed/);
+  assert.equal(whyCannotAdvance(queued, "execute_signal", 1_800_000_000n), null);
+
+  const expiry = 1_800_000_000n + EXECUTION_GRACE_PERIOD;
+  assert.equal(whyCannotAdvance(queued, "execute_signal", expiry), null);
+  assert.match(whyCannotAdvance(queued, "execute_signal", expiry + 1n) ?? "", /expired/);
+
+  // The grace period is the program's constant, not a guess.
+  assert.equal(EXECUTION_GRACE_PERIOD, 14n * 86_400n);
+});
+
+test("only a Signal proposal is executable from here, and the rest say why", () => {
+  // The other fourteen `execute_*` instructions each name a treasury, a mint or a
+  // minter the *vote* chose. A generic button would mean the UI picking accounts
+  // a proposal already decided.
+  const transfer = proposal({
+    state: { kind: "Queued" },
+    eta: 1_700_000_000n,
+    action: { kind: "TreasuryTransfer", destination: PublicKey.unique(), amount: 1n },
+  });
+  assert.match(
+    whyCannotAdvance(transfer, "execute_signal", 1_800_000_000n) ?? "",
+    /names accounts a vote already chose/,
   );
 });
 

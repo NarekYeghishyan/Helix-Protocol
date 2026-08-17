@@ -11,7 +11,7 @@ is bounded by the honesty of its coverage claims.
 anchor build                                                  # required first — the
                                                               # runtime tests load .so files
 cargo test --workspace                                        # 254 tests: unit + doc + runtime
-cd app && npm test                                            # 66 dashboard tests, no framework
+cd app && npm test                                            # 72 dashboard tests, no framework
 cargo test -p helix-staking --lib                             # one program's unit tests
 cargo test -p helix-staking --lib -- --nocapture rounding     # one test, with output
 
@@ -85,7 +85,7 @@ code you did not expect.
 
 **135 unit tests** over pure functions and state machines, **98 runtime tests** against the
 real BPF programs under LiteSVM, **18 live tests** against a validator and a Postgres
-instance, and **66 dashboard tests** under `node --test`. `cargo test --workspace` reports
+instance, and **72 dashboard tests** under `node --test`. `cargo test --workspace` reports
 254, the balance being doctests and the two checks that compare generated build artifacts
 against hand-maintained lists — `event_coverage.rs` and `idl_sync.rs`.
 
@@ -149,7 +149,7 @@ as `event_coverage.rs`.
 
 ### Dashboard tests
 
-`cd app && npm test` — 66 tests under `node --test`, with Node's native type-stripping. No
+`cd app && npm test` — 72 tests under `node --test`, with Node's native type-stripping. No
 test framework is installed and there is no build step.
 
 The dashboard builds transactions from the IDL, which makes the obvious test worthless: the
@@ -169,7 +169,7 @@ The third is the one that earns its keep, because the hazard it covers is silent
 | `amount.test.ts` | 8 | Formatting past 2^53, truncation direction, and that the value genuinely does not survive a `Number` — so the test cannot go vacuous |
 | `api.test.ts` | 7 | The read-API client against a stub HTTP server the test starts, rather than a patched `fetch` |
 | `coder.test.ts` | 16 | Every discriminator in both IDLs against Anchor's rule; exact instruction bytes; a `u64` argument refusing a `number`; a `Position` decoded from bytes the coder did not write; a `Pool` refused as a `Position`; a `Proposal` decoded past its variable-length fields |
-| `actions.test.ts` | 15 | The five flows account for account, including that `stake` and `unstake` order the vault and the owner's token account *differently*; both vote gates at their boundaries; a non-canonical pool refused; a derivable PDA refusing to be overridden |
+| `actions.test.ts` | 21 | The five flows account for account, including that `stake` and `unstake` order the vault and the owner's token account *differently*; both vote gates at their boundaries; the four lifecycle transitions requiring no signer and writing only the proposal; the timelock and its grace period; a non-canonical pool refused; a derivable PDA refusing to be overridden |
 | `errors.test.ts` | 10 | Codes worked out from the `#[error_code]` enums; the 6000-in-declaration-order rule `errors.rs` documents; attribution to the program the logs blamed; system-program error 0 named |
 | `chain.test.ts` | 7 | The account field lists the UI reads, in layout order — a cast is not a check, and a renamed field compiles fine while every figure derived from it becomes `undefined` |
 | `events.test.ts` | 5 | The claimed amount surviving base64 exact past 2^53; `amount_sent` versus `amount_credited`; data lines from other programs ignored rather than mistaken for events |
