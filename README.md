@@ -9,11 +9,13 @@ Rust with the Anchor framework.
 [![License](https://img.shields.io/badge/license-Apache--2.0-green)](./LICENSE)
 
 > **Status: unaudited. Not deployed to a public cluster.** All four programs build to BPF
-> and pass 256 tests locally, including runtime tests that execute the full governance →
-> treasury authority chain and a real Token-2022 mint with transfer fees, eight that run
-> against a local validator with the programs actually deployed, and ten that persist and
-> reload the projection through a real Postgres. The dashboard adds 92 more over the
-> transaction builders. A devnet deployment is scoped in
+> and pass 256 tests, including runtime tests that execute the full governance → treasury
+> authority chain and a real Token-2022 mint with transfer fees, eight that run against a
+> local validator with the programs actually deployed, and ten that persist and reload the
+> projection through a real Postgres. The dashboard adds 92 more over the transaction
+> builders. CI runs all of these on every push except the eight needing a validator, which
+> skip there and are run locally — it did not run any of them until
+> [the gate that skipped them was found](./docs/TESTING.md#the-gate-that-skipped-the-suite-it-was-guarding). A devnet deployment is scoped in
 > [ROADMAP.md](./docs/ROADMAP.md), and no transaction has yet been signed by a browser
 > wallet. Nothing here has held real value. See [SECURITY.md](./SECURITY.md).
 
