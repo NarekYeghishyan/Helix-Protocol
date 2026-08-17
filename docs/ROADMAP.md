@@ -22,7 +22,7 @@ says how much to trust each one.
 | 2 | Integration tests against a validator | ✅ Done — 74 runtime tests; found and fixed F-8 |
 | 3 | Devnet deployment + verifiable builds | ◐ Bootstrap measured, planned, *verifiable after the fact*, and now submitted to a real cluster; F-9 fixed; the devnet deploy itself is blocked on funding |
 | 4 | Indexer + analytics API | ✅ Done — decode, ingestion, the RPC source, the read API and the Postgres binding, each tested against the real thing |
-| 5 | Dashboard + wallet integration | ◐ Analytics, wallet, and every write flow — stake, unstake, claim, close, vote — built, simulated before signing and tested from both sides of the IDL; none has been driven from a browser wallet |
+| 5 | Dashboard + wallet integration | ◐ Analytics, wallet, and every write flow — stake, unstake, claim, close, vote, and the permissionless lifecycle — built, simulated before signing and tested from both sides of the IDL; none has been driven from a browser wallet |
 | 6 | Fuzzing + external audit prep | ✅ Done — compute benchmarked, fuzzing found F-10, audit scoped in [AUDIT-READINESS.md](./AUDIT-READINESS.md) |
 | 7 | Governance migration (burn the admin keys) | ◐ 7.1 and 7.2 reachable and tested — F-11 fixed; 7.3 needs a deployment |
 
@@ -362,8 +362,8 @@ hard to predict from outside.
 | Milestone | Deliverable | Est. | Status |
 |---|---|---|---|
 | 5.1 | Next.js app, wallet-adapter, cluster switching | 1d | ✅ Done |
-| 5.2 | Stake / unstake / claim flows with simulation before signing | 2d | ✅ Done — plus `close_position`; 66 tests |
-| 5.3 | Governance UI: proposal list, vote, lifecycle state, timelock countdown | 2d | ◐ Voting built, with both eligibility gates explained on screen; creating and advancing proposals is not |
+| 5.2 | Stake / unstake / claim flows with simulation before signing | 2d | ✅ Done — plus `close_position`; 72 dashboard tests |
+| 5.3 | Governance UI: proposal list, vote, lifecycle state, timelock countdown | 2d | ✅ Done — plus the three permissionless transitions; creating a proposal is not built |
 | 5.4 | Analytics views over the Phase 4 API | 1–2d | ✅ Done |
 
 **5.1 and 5.4 are the half that does not need a chain**, and they were built first for that
@@ -389,14 +389,35 @@ lines and is exactly the second implementation `Unstaked` was given a `weighted_
 field to avoid ([W-8](./ARCHITECTURE-REVIEW.md#weaknesses)). A second implementation agrees
 until one of them changes.
 
-**5.3 is voting and not the rest, and the split is deliberate.** Voting is the flow whose
-two gates cannot be guessed from a proposal list: `lock_end >= voting_ends_at` and
+**5.3's interesting part is the two gates, and the second one is why it is not a list with
+buttons.** `cast_vote` accepts a position only if `lock_end >= voting_ends_at` and
 `position_id < position_count_snapshot` — the second being the electorate gate
-[F-10](./SECURITY-ASSESSMENT.md#f-10--post-snapshot-weight-could-vote) installed. A UI that
-shows a vote button for every position teaches people to click it and read `0x1775`, so each
-position is listed with the reason it can or cannot vote. Creating proposals and advancing
-them through finalize/queue/execute are permissionless single-account calls that carry no
-comparable trap, and the same plumbing carries them when they are wanted.
+[F-10](./SECURITY-ASSESSMENT.md#f-10--post-snapshot-weight-could-vote) installed. Neither is
+guessable from a proposal list, and a UI that shows a vote button for every position teaches
+people to click it and read `0x1775`. So each position is listed with the reason it can or
+cannot vote, taken from the same comparisons the program makes.
+
+**The lifecycle transitions are shown because they are permissionless, not despite it.**
+Activate, finalize and queue take no signer at all — only a fee payer — because each outcome
+is a pure function of state already on chain. `lifecycle.rs` says why that matters:
+permissioning finalisation would let whoever held that permission strand a proposal they
+disliked in `Voting` forever. A UI that hid those transitions behind an assumed authority
+would misrepresent the design, so every proposal is listed in every state with its one
+available move enabled, and a test asserts those instructions carry no signer and write
+nothing but the proposal.
+
+The timelock countdown shows **two** deadlines, and the second is the one that gets
+forgotten. A queued proposal becomes executable at its `eta` and stops being executable
+fourteen days later; without that expiry, one passed under one set of conditions could lie
+dormant and be executed into a different world. A countdown showing only "executable in 6h"
+presents an expired proposal as perpetually ready.
+
+`execute_signal` is the only `execute_*` offered. The other fourteen each name a treasury, a
+mint or a minter the *vote* chose, and a generic button would mean the UI picking accounts a
+proposal already decided — so they are refused with that reason rather than hidden.
+
+What is not built is proposal *creation*. It needs a position above `min_weight_to_propose`
+and a `ProposalAction` to be composed, which is a form rather than a button.
 
 Two things the UI does that most dashboards do not, both inherited from decisions the API
 already made:

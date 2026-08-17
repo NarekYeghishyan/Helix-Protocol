@@ -12,7 +12,7 @@ Rust with the Anchor framework.
 > and pass 254 tests locally, including runtime tests that execute the full governance →
 > treasury authority chain and a real Token-2022 mint with transfer fees, eight that run
 > against a local validator with the programs actually deployed, and ten that persist and
-> reload the projection through a real Postgres. The dashboard adds 66 more over the
+> reload the projection through a real Postgres. The dashboard adds 72 more over the
 > transaction builders. A devnet deployment is scoped in
 > [ROADMAP.md](./docs/ROADMAP.md), and no transaction has yet been signed by a browser
 > wallet. Nothing here has held real value. See [SECURITY.md](./SECURITY.md).
@@ -152,7 +152,7 @@ grep -i "stack offset" build.log   # must be empty — anchor build exits 0 even
 cargo test --workspace             # 254 tests: unit + doc + runtime
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo fmt --all -- --check
-cd app && npm test                 # 66 more, over the transaction builders
+cd app && npm test                 # 72 more, over the transaction builders
 ```
 
 `anchor build` first, every time. The runtime tests load `.so` files from `target/deploy`

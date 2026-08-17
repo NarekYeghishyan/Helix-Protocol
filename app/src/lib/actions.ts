@@ -240,6 +240,121 @@ export function buildVote(params: VoteParams & { choice: VoteChoiceName }): Prep
 }
 
 /**
+ * The transitions anyone may drive, and the instruction each maps to.
+ *
+ * All three are permissionless and take no signer at all — the outcome of each is
+ * a pure function of state already on chain, so there is nothing to decide, only
+ * to record. `lifecycle.rs` is explicit about why: making finalisation
+ * permissioned would let whoever held the permission strand a proposal they
+ * disliked in `Voting` forever.
+ *
+ * `execute_signal` is here and the other fourteen `execute_*` instructions are
+ * not, because a signalling proposal moves nothing and needs no accounts beyond
+ * the proposal itself. The rest each name a treasury, a mint or a minter the
+ * proposal chose, and executing one from a generic button would mean the UI
+ * choosing accounts a vote already decided.
+ */
+export const ADVANCE = {
+  activate_proposal: {
+    from: "Draft",
+    label: "Activate",
+    hint: "Opens voting and fixes the quorum denominator. Anyone may do this.",
+  },
+  finalize_proposal: {
+    from: "Voting",
+    label: "Finalize",
+    hint: "Records the outcome once voting has closed.",
+  },
+  queue_proposal: {
+    from: "Succeeded",
+    label: "Queue",
+    hint: "Starts the timelock. The delay is fixed at this moment and never recomputed.",
+  },
+  execute_signal: {
+    from: "Queued",
+    label: "Execute",
+    hint: "Records the outcome of a signalling proposal. Moves nothing.",
+  },
+} as const;
+
+export type AdvanceKind = keyof typeof ADVANCE;
+
+export interface AdvanceParams {
+  realm: Realm;
+  proposal: Proposal;
+  /** Pays the fee. Not a signer of the instruction — there is no signer. */
+  payer: PublicKey;
+  /** Required by `activate_proposal`, which snapshots the pool. */
+  stakingPool?: PublicKey;
+}
+
+export function buildAdvance(params: AdvanceParams & { kind: AdvanceKind }): Prepared {
+  const { realm, proposal, payer, stakingPool, kind } = params;
+
+  const accounts: Record<string, PublicKey> = {};
+  if (kind === "activate_proposal") {
+    if (!stakingPool) throw new Error("activating a proposal needs the realm's staking pool");
+    accounts.staking_pool = stakingPool;
+  }
+
+  const instruction = buildInstruction(GOVERNANCE, GOVERNANCE_PROGRAM_ID, kind, {
+    accounts,
+    seedFields: {
+      "realm.staking_pool": realm.staking_pool,
+      "proposal.id": proposal.id,
+    },
+  });
+
+  return {
+    summary: `${ADVANCE[kind].label} proposal #${proposal.id}`,
+    instructions: [instruction],
+    feePayer: payer,
+  };
+}
+
+/** How long a queued proposal stays executable after its timelock elapses. */
+export const EXECUTION_GRACE_PERIOD = 14n * 86_400n;
+
+/**
+ * Why a transition cannot be driven right now, or `null` if it can.
+ *
+ * Restates the program's gates so a disabled button carries a reason. Same
+ * standing as `whyCannotVote`: a courtesy, never the authority — the program
+ * enforces all of it and simulation is what decides.
+ */
+export function whyCannotAdvance(
+  proposal: Proposal,
+  kind: AdvanceKind,
+  now: bigint,
+): string | null {
+  const expected = ADVANCE[kind].from;
+  if (proposal.state.kind !== expected) {
+    return `This is only possible while the proposal is ${expected}; it is ${proposal.state.kind}.`;
+  }
+
+  if (kind === "finalize_proposal" && now < proposal.voting_ends_at) {
+    return "Voting is still open.";
+  }
+
+  if (kind === "execute_signal") {
+    if (proposal.action.kind !== "Signal") {
+      return (
+        `This proposal's action is ${proposal.action.kind}, which names accounts a vote ` +
+        `already chose. Execute it with a client that supplies them.`
+      );
+    }
+    if (now < proposal.eta) return "The timelock has not elapsed.";
+    // A queued proposal nobody executed expires, so that one passed under one
+    // set of conditions cannot be executed into a different world a year later.
+    if (now > proposal.eta + EXECUTION_GRACE_PERIOD) {
+      return "The execution window has closed — this proposal has expired.";
+    }
+  }
+
+  return null;
+}
+
+/**
  * Why a position cannot vote on a proposal, or `null` if it can.
  *
  * Both gates are the program's, restated for the UI so a button can be disabled

@@ -5,7 +5,7 @@ vote.
 
 ```bash
 npm install --ignore-scripts   # see "Install notes" below
-npm test                       # 66 tests, no test framework installed
+npm test                       # 72 tests, no test framework installed
 npm run typecheck
 npm run build
 npm run dev                    # http://localhost:3000
@@ -154,9 +154,9 @@ from the `#[derive(Accounts)]` structs.
   from Anchor's rule, exact instruction bytes, and a `Position` decoded from bytes the coder
   did not write.
 - [`actions.test.ts`](./src/lib/actions.test.ts) — the five flows against hand-transcribed
-  account lists. Note that `stake` and `unstake` order the vault and the owner's token
-  account *differently*; positional encoding means a client that assumed one order for both
-  would swap source and destination.
+  account lists, plus the four lifecycle transitions. Note that `stake` and `unstake` order
+  the vault and the owner's token account *differently*; positional encoding means a client
+  that assumed one order for both would swap source and destination.
 - [`errors.test.ts`](./src/lib/errors.test.ts) — error codes worked out from the
   `#[error_code]` enums, including the rule `errors.rs` documents: variants are appended,
   never inserted, because Anchor numbers them from 6000 in declaration order.
@@ -195,8 +195,28 @@ not reachable from anything in CI.
 That is the remaining unknown, and it is smaller than it was: what used to be untested was
 the instruction bytes, and those are now pinned from both sides.
 
+## The lifecycle is permissionless, and the UI says so
+
+Activate, finalize and queue take **no signer at all** — only a fee payer. `lifecycle.rs` is
+explicit about why: each outcome is a pure function of state already on chain, so there is
+nothing to decide, only to record, and permissioning finalisation would let whoever held
+that permission strand a proposal they disliked in `Voting` forever.
+
+So every proposal is listed in every state with its one available transition enabled, and a
+test asserts those instructions carry no signer and write nothing but the proposal.
+
+The timelock shows **two** deadlines. A queued proposal becomes executable at its `eta` and
+stops being executable fourteen days later — without that expiry, one passed under one set
+of conditions could lie dormant and be executed into a different world. A countdown showing
+only "executable in 6h" would present an expired proposal as perpetually ready.
+
+`execute_signal` is the only `execute_*` offered. The other fourteen each name a treasury, a
+mint or a minter that the *vote* chose, and a generic button would mean the UI picking
+accounts a proposal already decided — so they are refused with that reason rather than
+hidden.
+
 ## Not built yet
 
-Proposal *creation* from the UI, and the lifecycle transitions after a vote closes —
-finalize, queue, execute. Voting is the flow with the gates worth explaining; the rest are
-permissionless single-account calls, and the same `useFlow` plumbing carries them.
+Creating a proposal from the UI. It needs a position above `min_weight_to_propose` and an
+action to be composed, which is a form rather than a button, and the `ProposalAction`
+variant set is what makes it worth designing properly.

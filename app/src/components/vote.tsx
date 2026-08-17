@@ -28,7 +28,16 @@ import { useCallback, useEffect, useState } from "react";
 import { useFlow } from "@/components/flow";
 import { Preview } from "@/components/preview";
 import { useExplorer } from "@/components/stake";
-import { buildVote, whyCannotVote, type VoteChoiceName } from "@/lib/actions";
+import {
+  ADVANCE,
+  EXECUTION_GRACE_PERIOD,
+  buildAdvance,
+  buildVote,
+  whyCannotAdvance,
+  whyCannotVote,
+  type AdvanceKind,
+  type VoteChoiceName,
+} from "@/lib/actions";
 import { bpsToPercent, shortAddress, toDisplay } from "@/lib/amount";
 import {
   fetchPositions,
@@ -130,7 +139,6 @@ export function VotePanel({ realmAddress }: { realmAddress: string }) {
   if (state.kind === "error") return <Panel><p className="state warn">{state.message}</p></Panel>;
 
   const { realm, proposals, positions } = state.value;
-  const open = proposals.filter((p) => p.account.state.kind === "Voting");
 
   return (
     <Panel>
@@ -141,13 +149,12 @@ export function VotePanel({ realmAddress }: { realmAddress: string }) {
       </p>
 
       {proposals.length === 0 && <p className="state muted">This realm has no proposals.</p>}
-      {proposals.length > 0 && open.length === 0 && (
-        <p className="state muted">
-          No proposal is open for voting. {proposals.length} exist in other states.
-        </p>
-      )}
 
-      {open.map((p) => (
+      {/* Every proposal, not only the ones open for voting. A governance UI that
+          hides the others makes the lifecycle invisible — and three of its four
+          transitions are permissionless, so a proposal stuck in Draft or
+          Succeeded is something any reader can move. */}
+      {proposals.map((p) => (
         <ProposalCard
           key={p.address.toBase58()}
           proposal={p}
@@ -180,6 +187,7 @@ function ProposalCard({
 
   const p = proposal.account;
   const now = BigInt(Math.floor(Date.now() / 1000));
+  const voting = p.state.kind === "Voting";
   const closesIn = Number(p.voting_ends_at - now);
 
   const cast = p.for_votes + p.against_votes + p.abstain_votes;
@@ -189,15 +197,18 @@ function ProposalCard({
       <div className="position-head">
         <span className="mono">#{p.id.toString()}</span>
         <strong>{p.title}</strong>
+        <span className={`badge ${p.state.kind.toLowerCase()}`}>{p.state.kind}</span>
         <span className="badge">{p.action.kind}</span>
       </div>
 
       <p className="muted small">
-        Closes {closesIn > 0 ? `in ${formatDuration(closesIn)}` : "now"} ·{" "}
+        {voting && <>Closes {closesIn > 0 ? `in ${formatDuration(closesIn)}` : "now"} · </>}
         <span title="Fixed at activation so a whale cannot inflate the denominator after seeing the tally">
           quorum measured against {toDisplay(p.total_weight_snapshot.toString())} of weight
         </span>
       </p>
+
+      <Timelock proposal={p} now={now} />
 
       <div className="tally">
         <span>For {toDisplay(p.for_votes.toString())}</span>
@@ -210,26 +221,61 @@ function ProposalCard({
         </span>
       </div>
 
-      <div className="toggle" role="group" aria-label="Vote choice">
-        {CHOICES.map((c) => (
-          <button
-            key={c}
-            className={choice === c ? "on" : ""}
-            onClick={() => setChoice(c)}
-            disabled={flow.busy}
-          >
-            {c}
-          </button>
-        ))}
+      {/* The permissionless half of the lifecycle. Shown for every proposal, with
+          the one transition its state allows enabled — a proposal sitting in
+          `Succeeded` is not waiting for an authority, it is waiting for anyone. */}
+      <div className="row">
+        {(Object.keys(ADVANCE) as AdvanceKind[]).map((kind) => {
+          const reason = whyCannotAdvance(p, kind, now);
+          return (
+            <button
+              key={kind}
+              onClick={() =>
+                flow.preview(() =>
+                  buildAdvance({
+                    realm,
+                    proposal: p,
+                    payer: voter,
+                    stakingPool: realm.staking_pool,
+                    kind,
+                  }),
+                )
+              }
+              disabled={flow.busy || reason !== null}
+              title={reason ?? ADVANCE[kind].hint}
+            >
+              {ADVANCE[kind].label}
+            </button>
+          );
+        })}
+        <span className="muted small">
+          No signature of authority — these take no signer at all, only a fee payer.
+        </span>
       </div>
 
-      {positions.length === 0 && (
+      {voting && (
+        <div className="toggle" role="group" aria-label="Vote choice">
+          {CHOICES.map((c) => (
+            <button
+              key={c}
+              className={choice === c ? "on" : ""}
+              onClick={() => setChoice(c)}
+              disabled={flow.busy}
+            >
+              {c}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {voting && positions.length === 0 && (
         <p className="state muted">
           You hold no positions in the pool this realm governs, so you have no weight here.
         </p>
       )}
 
-      {positions.map((held) => {
+      {voting &&
+        positions.map((held) => {
         const reason = whyCannotVote(p, held.account, now);
         return (
           <div className="row" key={held.address.toBase58()}>
@@ -260,14 +306,16 @@ function ProposalCard({
                 button grey" is the question this panel exists to answer. */}
             {reason && <span className="muted small">{reason}</span>}
           </div>
-        );
-      })}
+          );
+        })}
 
-      <p className="muted small">
-        Voting twice with the same position is impossible rather than checked for: the vote record
-        is a PDA of (proposal, position), so a second attempt fails at account creation. The
-        preview says so before you sign.
-      </p>
+      {voting && (
+        <p className="muted small">
+          Voting twice with the same position is impossible rather than checked for: the vote
+          record is a PDA of (proposal, position), so a second attempt fails at account
+          creation. The preview says so before you sign.
+        </p>
+      )}
 
       <Preview
         state={flow.state}
@@ -280,6 +328,52 @@ function ProposalCard({
         {shortAddress(proposal.address.toBase58())}
       </p>
     </div>
+  );
+}
+
+/**
+ * The timelock, once a proposal is queued.
+ *
+ * Two deadlines, not one, and the second is the one people forget. A queued
+ * proposal becomes executable at `eta` and stops being executable fourteen days
+ * later — without that expiry a proposal passed under one set of conditions could
+ * lie dormant and then be executed into a completely different world. A countdown
+ * that showed only "executable in 6h" would present an expired proposal as
+ * perpetually ready.
+ *
+ * `eta` is fixed when the proposal is queued and never recomputed, so lowering
+ * `realm.timelock_delay` afterwards cannot shorten a delay already running. That
+ * is what stops the timelock being bypassed by governing the timelock.
+ */
+function Timelock({ proposal, now }: { proposal: Proposal; now: bigint }) {
+  if (proposal.state.kind !== "Queued") return null;
+
+  const expiresAt = proposal.eta + EXECUTION_GRACE_PERIOD;
+  const untilExecutable = Number(proposal.eta - now);
+  const untilExpiry = Number(expiresAt - now);
+
+  if (untilExpiry <= 0) {
+    return (
+      <p className="state warn">
+        The execution window closed {formatDuration(-untilExpiry)} ago. This proposal passed
+        and can no longer be executed.
+      </p>
+    );
+  }
+
+  if (untilExecutable > 0) {
+    return (
+      <p className="muted small">
+        Timelock: executable in <strong>{formatDuration(untilExecutable)}</strong>, then for{" "}
+        {formatDuration(Number(EXECUTION_GRACE_PERIOD))} after that.
+      </p>
+    );
+  }
+
+  return (
+    <p className="muted small">
+      Executable now · the window closes in <strong>{formatDuration(untilExpiry)}</strong>.
+    </p>
   );
 }
 
