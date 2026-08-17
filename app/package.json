@@ -9,7 +9,8 @@
     "build": "next build",
     "start": "next start",
     "typecheck": "tsc --noEmit",
-    "test": "node --test src/lib/*.test.ts"
+    "test": "node --test src/lib/*.test.ts",
+    "sync-idl": "node scripts/sync-idl.mjs"
   },
   "dependencies": {
     "@solana/wallet-adapter-base": "^0.9.27",

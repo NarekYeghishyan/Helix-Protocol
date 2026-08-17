@@ -3,6 +3,8 @@
 import { useEffect, useState } from "react";
 
 import { PoolPanel, ProposalsPanel, StakersPanel, TreasuryPanel } from "@/components/panels";
+import { StakePanel } from "@/components/stake";
+import { VotePanel } from "@/components/vote";
 import { ClusterPicker, WalletMultiButton } from "@/components/Wallet";
 import { api, BASE_URL, type Finality, type Health } from "@/lib/api";
 
@@ -126,6 +128,11 @@ export default function Dashboard() {
         <FinalityToggle value={finality} onChange={setFinality} />
       </section>
 
+      {/* Two halves, and they do not share a data source. Everything above reads
+          the indexer's projection, with its finality attached; everything below
+          reads the cluster directly, because a staker who cannot withdraw
+          because an analytics service is down has been given something worse
+          than no dashboard. */}
       <div className="grid">
         <PoolPanel address={pool} finality={finality} />
         <StakersPanel address={pool} finality={finality} />
@@ -133,10 +140,21 @@ export default function Dashboard() {
         <TreasuryPanel address={treasury} finality={finality} />
       </div>
 
+      <h2 className="section">Act</h2>
+      <p className="muted small">
+        Read from the cluster your wallet is connected to, not from the indexer. Every
+        transaction is simulated and its result shown before a wallet is asked to sign.
+      </p>
+
+      <div className="grid">
+        <StakePanel poolAddress={pool} />
+        <VotePanel realmAddress={realm} />
+      </div>
+
       <footer className="muted small">
-        Nothing is deployed. The indexer serves an empty projection until an ingestion
-        source is wired — ROADMAP 4.1. Amounts are rendered from string base units via
-        BigInt, never through a JavaScript number.
+        Amounts are rendered from string base units via BigInt, never through a JavaScript
+        number. Instruction data, account order and PDA seeds come from the IDLs
+        <code>anchor build</code> generates — see <code>app/scripts/sync-idl.mjs</code>.
       </footer>
     </main>
   );

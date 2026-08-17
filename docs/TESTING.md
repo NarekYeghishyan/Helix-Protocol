@@ -10,7 +10,8 @@ is bounded by the honesty of its coverage claims.
 ```bash
 anchor build                                                  # required first — the
                                                               # runtime tests load .so files
-cargo test --workspace                                        # 241 tests: unit + doc + runtime
+cargo test --workspace                                        # 244 tests: unit + doc + runtime
+cd app && npm test                                            # 66 dashboard tests, no framework
 cargo test -p helix-staking --lib                             # one program's unit tests
 cargo test -p helix-staking --lib -- --nocapture rounding     # one test, with output
 
@@ -83,14 +84,20 @@ code you did not expect.
 ## What is covered
 
 **127 unit tests** over pure functions and state machines, **98 runtime tests** against the
-real BPF programs under LiteSVM, and **16 live tests** against a validator and a Postgres
-instance.
+real BPF programs under LiteSVM, **16 live tests** against a validator and a Postgres
+instance, and **66 dashboard tests** under `node --test`. `cargo test --workspace` reports
+244, the balance being doctests and the two checks that compare generated build artifacts
+against hand-maintained lists — `event_coverage.rs` and `idl_sync.rs`.
 
-The three tiers are not a hierarchy but a statement about what each can prove. Unit tests
-reach arithmetic and state machines; LiteSVM reaches the wiring between programs; only real
+The tiers are not a hierarchy but a statement about what each can prove. Unit tests reach
+arithmetic and state machines; LiteSVM reaches the wiring between programs; only real
 infrastructure reaches the transport and the storage. Each tier is used for the smallest set
-of claims that genuinely needs it, and the live tier is the smallest of the three by design
-— see [`indexer/src/rpc.rs`](../indexer/src/rpc.rs).
+of claims that genuinely needs it, and the live tier is the smallest by design — see
+[`indexer/src/rpc.rs`](../indexer/src/rpc.rs).
+
+The dashboard tier is the odd one out and is described separately below, because the thing
+it has to avoid is different: everything it tests is derived from the IDL, so a test that
+compares against the IDL proves only that a file was read twice.
 
 ### Unit tests
 
@@ -133,6 +140,48 @@ of claims that genuinely needs it, and the live tier is the smallest of the thre
 | `fuzz_invariants.rs` | 7 | §1.1–1.4, §3.1–3.2, §4.1, §4.3, §4.5–4.6 asserted after every operation of 22 random sequences, plus the tests that keep the campaign honest |
 | `realm_authority.rs` | 6 | §4.14, §4.15 — F-11: the realm's parameters reachable by proposal, the human authority revocable, and the attack that was possible before both |
 | `indexer_reconciliation.rs` | 8 | The [indexer's](../indexer) projection compared to on-chain accounts field by field, over the staking lifecycle, a fee-bearing mint, the governance lifecycle including nested CPI, replay, and partial history |
+`idl_sync.rs` also lives in this crate but is not a runtime test — it loads no program. It is
+here because this is the job with `anchor build` output, and it asserts that the dashboard's
+checked-in IDLs are what `anchor build` now generates, target the declared program ids, and
+still declare every instruction the write flows call. Same placement, and the same reasoning,
+as `event_coverage.rs`.
+
+### Dashboard tests
+
+`cd app && npm test` — 66 tests under `node --test`, with Node's native type-stripping. No
+test framework is installed and there is no build step.
+
+The dashboard builds transactions from the IDL, which makes the obvious test worthless: the
+encoder reads the IDL, so asserting that its output matches the IDL proves a file was opened
+twice. Every assertion is independent of that path in one of three ways.
+
+| Way | Where | What it catches |
+|---|---|---|
+| Anchor's own discriminator rule, recomputed — `sha256("global:<ix>")[0..8]` | `coder.test.ts` | A discriminator the dispatcher would route elsewhere. This checks the recorded value against the rule the runtime actually applies |
+| Byte vectors written out by hand | `coder.test.ts` | `stake(7, 1_000_000, Gold)` has one correct encoding. If the coder and the IDL agreed on something wrong, this still fails |
+| Account lists transcribed from the `#[derive(Accounts)]` structs | `actions.test.ts` | A builder bug *and* an IDL that has stopped describing the program |
+
+The third is the one that earns its keep, because the hazard it covers is silent.
+
+| File | Tests | What is asserted |
+|---|---|---|
+| `amount.test.ts` | 8 | Formatting past 2^53, truncation direction, and that the value genuinely does not survive a `Number` — so the test cannot go vacuous |
+| `api.test.ts` | 7 | The read-API client against a stub HTTP server the test starts, rather than a patched `fetch` |
+| `coder.test.ts` | 16 | Every discriminator in both IDLs against Anchor's rule; exact instruction bytes; a `u64` argument refusing a `number`; a `Position` decoded from bytes the coder did not write; a `Pool` refused as a `Position`; a `Proposal` decoded past its variable-length fields |
+| `actions.test.ts` | 15 | The five flows account for account, including that `stake` and `unstake` order the vault and the owner's token account *differently*; both vote gates at their boundaries; a non-canonical pool refused; a derivable PDA refusing to be overridden |
+| `errors.test.ts` | 10 | Codes worked out from the `#[error_code]` enums; the 6000-in-declaration-order rule `errors.rs` documents; attribution to the program the logs blamed; system-program error 0 named |
+| `chain.test.ts` | 7 | The account field lists the UI reads, in layout order — a cast is not a check, and a renamed field compiles fine while every figure derived from it becomes `undefined` |
+| `events.test.ts` | 5 | The claimed amount surviving base64 exact past 2^53; `amount_sent` versus `amount_credited`; data lines from other programs ignored rather than mistaken for events |
+
+**The seam and its guard.** The IDLs live in `app/src/idl/` as a copy, because `target/` is
+gitignored and the dashboard's CI job has no Anchor toolchain. `idl_sync.rs` runs in the job
+that does have it. Both layers were checked by mutation: swapping `stake_vault` and
+`owner_token_account` in the copied IDL fails `idl_sync.rs` and, independently,
+`actions.test.ts`.
+
+That pair is the whole point. A drifted account order does not fail to encode — Anchor's
+account list is positional and unnamed on the wire — so it produces a well-formed
+transaction naming the right accounts in the wrong slots, and asks a wallet to sign it.
 
 ### Live tests
 
@@ -342,6 +391,7 @@ Read this section before trusting anything above.
 | Deployment-time front-running (§5.8) | F-1's *mitigation* is measured and tested; the window before bootstrap lands is not closeable in-program without a deployer gate | Phase 3 |
 | Multi-staker distribution at scale | Two or three positions are exercised, not hundreds | Phase 6 (fuzzing) |
 | Real-cluster behaviour | LiteSVM is faithful but not a validator; no test covers fees, congestion or reorgs | Phase 3 (devnet) |
+| **A browser wallet** | Every dashboard flow is tested against hand-written vectors and simulated by a node executing a message nobody signed. No transaction has been through a wallet extension: an adapter that re-serialises a v0 message, a wallet refusing `replaceRecentBlockhash`, a popup dismissed mid-flow | Needs a person with a wallet, not another test |
 
 ### What integration testing found that unit testing could not
 
