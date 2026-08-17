@@ -75,6 +75,59 @@ tests. Three of those assertions were vacuous when first written and were only f
 mutation testing — see
 [TESTING.md](../docs/TESTING.md#the-live-tests-and-the-three-that-were-not-testing-their-claims).
 
+## The backfill is a different traversal, not the same one reversed
+
+The live poll chases a cursor upward. A backfill walks from the tip toward genesis, and the
+second row of the table above is why it is not simply the poll with a sign flipped:
+`before` and `limit` express "the newest N older than X" exactly, and "the oldest N newer
+than X" not at all. A descent is the traversal that API was designed for, which is why
+[`DescendingSource::fetch_before`](./src/source.rs) needs one request per page where
+`fetch` needs a walk.
+
+**The hard part is not reading, it is where the result may go.** Most of the projection
+assigns running totals the events carry — the property that makes redelivery harmless — and
+that property depends entirely on ledger order. Fold an older `RewardRateChanged` after a
+newer one and the newer rate is overwritten by the older. No error, no anomaly, a plausible
+number.
+
+So [`Backfill`](./src/ingest.rs) owns no `Analytics` at all. It yields
+`SettledTransaction`s for the `events` table, whose key is `(signature, log_index)` and
+whose stated purpose is that everything else is derivable from it — an order-independent
+destination. The projection is then rebuilt from those rows in slot order by
+[`Analytics::replay`](./src/projection.rs). A `Backfill` holding a projection would invite
+exactly the fold it exists to prevent, so it does not have one to offer.
+
+Three smaller decisions, each because the obvious alternative is quietly wrong:
+
+- **[`Descent`](./src/source.rs) is a separate type from `Cursor`, not a reused one.** It
+  means the opposite thing — everything at or *above* its slot has been read. Reusing
+  `Cursor` with an inverted sense would have compiled everywhere and been wrong in one
+  direction.
+- **A page carries its range, not just its contents.** A page of nothing but *failed*
+  transactions is ordinary for a program someone is spamming: it has nothing to fold and is
+  not the end of history. Reading `transactions.is_empty()` as genesis stops the descent
+  early and reports the rest complete. `DescentPage::covered` is what actually terminates
+  it.
+- **The descent refuses the unfinalised tail and moves past it anyway.** It starts at the
+  tip, inside the range the live stream owns. It skips those transactions — a row a fork can
+  revoke is a number that was never true — and counts them, rather than stalling on them
+  waiting for finality that the live stream is already handling.
+
+The two meet by overlapping rather than by meeting exactly, which needs no coordination
+between them because both write the same idempotent rows.
+
+Verified two ways. `ingest.rs` drives it against a scripted ledger for the properties a
+cluster cannot demonstrate on demand, and `rpc_source_live.rs` descends a real validator and
+asserts the result reconstructs the same projection the *forward* pass builds — two
+traversals of one history, compared against each other and against the accounts. Both
+descent assertions were mutation-tested: handing pages back newest-first, and taking the
+next page's bound before truncation rather than after, each fail them.
+
+**What is not built is the store binding.** The `backfill` row of `cursors` has no writer
+yet, so a descent is resumable in memory and not across a restart, and nothing yet clears
+`partial_history` when one completes. That is the half that needs a database to test, and
+it is scoped in [ROADMAP 4.3](../docs/ROADMAP.md#phase-4--indexer-and-analytics-api).
+
 ## Persistence
 
 ```bash

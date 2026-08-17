@@ -311,6 +311,35 @@ impl Cluster {
             .ok_or_else(|| ClusterError::Rpc("getSlot returned no number".into()))
     }
 
+    /// Blocks until finality has caught up with the current confirmed tip.
+    ///
+    /// For tests that compare something which only reads finalised history
+    /// against something which reads to the tip. Without this the two are being
+    /// asked about different ranges and the comparison fails intermittently,
+    /// which is worse than failing — an intermittent test gets re-run rather than
+    /// read.
+    ///
+    /// Polls rather than subscribes because the whole `Cluster` harness is
+    /// request/response; a local validator finalises in a couple of seconds.
+    pub fn wait_for_finality(&self) -> Result<u64> {
+        let target = self
+            .call("getSlot", json!([{ "commitment": "confirmed" }]))?
+            .as_u64()
+            .ok_or_else(|| ClusterError::Rpc("getSlot returned no number".into()))?;
+
+        for _ in 0..120 {
+            let finalized = self.finalized_slot()?;
+            if finalized >= target {
+                return Ok(finalized);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+
+        Err(ClusterError::Rpc(format!(
+            "the cluster did not finalise slot {target} within 60s"
+        )))
+    }
+
     /// Reads an Anchor account back off the chain.
     ///
     /// The point of the live test is comparing the projection against what the

@@ -26,7 +26,7 @@
 use anchor_lang::prelude::Pubkey;
 use anchor_spl::token_2022::spl_token_2022;
 use helix_indexer::rpc::RpcLogSource;
-use helix_indexer::{Ingestor, LogSource, Program};
+use helix_indexer::{Backfill, Ingestor, LogSource, Program, SettledTransaction};
 use helix_integration_tests::bootstrap::default_realm_params;
 use helix_integration_tests::cluster::{Cluster, ClusterError};
 use helix_integration_tests::{cluster_or_skip, pda, TestEnv};
@@ -536,5 +536,149 @@ fn a_transaction_reported_by_three_addresses_is_folded_once() {
         Program::ALL.len(),
         4,
         "a program was added without the RPC source being told to follow it"
+    );
+}
+
+/// Phase 4.3 — the descent, against the API it was written for.
+///
+/// `getSignaturesForAddress` pages backwards and counts `limit` from the newest
+/// end, which is why [`LogSource::fetch`] has to descend to its cursor and
+/// reverse. A backfill wants exactly what the API offers, so the interesting
+/// question is not whether it can read — it is whether the two traversals see
+/// the *same history*.
+///
+/// That is what is asserted: a descent from the tip to genesis yields the same
+/// set of transactions the live poll does, and replaying it reconstructs the
+/// same projection. A backfill that quietly skipped a page would still produce
+/// plausible numbers, and only a comparison against the other direction finds
+/// it.
+#[test]
+fn a_descent_sees_the_same_history_the_live_poll_does() {
+    let mut live = Live::bootstrap(cluster_or_skip!());
+
+    let (owner, tokens) = live.staker(10_000_000);
+    live.stake(&owner, &tokens, 0, 1_000_000, LockTier::Flexible);
+    live.stake(&owner, &tokens, 1, 2_500_000, LockTier::Silver);
+
+    // Wait for finality: the descent refuses to claim the unfinalised tail, and
+    // a test that did not wait would compare a complete forward pass against a
+    // descent missing its most recent slots.
+    live.cluster
+        .wait_for_finality()
+        .expect("the cluster did not finalise");
+
+    let forward = live.ingest();
+
+    // A small page on purpose. The whole ledger fits in one request otherwise,
+    // and a paging bug is precisely what this is looking for.
+    let mut source = RpcLogSource::new(live.cluster.url()).with_page_size(3);
+    let mut backfill = Backfill::new();
+    let mut descended: Vec<SettledTransaction> = Vec::new();
+
+    for _ in 0..256 {
+        let batch = backfill.step(&mut source, 3).expect("descend");
+        let mut older = batch.transactions;
+        older.extend(descended);
+        descended = older;
+        if batch.complete {
+            break;
+        }
+    }
+    assert!(
+        backfill.is_complete(),
+        "the descent did not reach genesis in 256 pages"
+    );
+
+    // Slots ascend, which is the contract `DescendingSource` states and the one
+    // `Analytics::replay` depends on. Getting this wrong produces a projection
+    // that is merely incorrect.
+    let slots: Vec<u64> = descended.iter().map(|t| t.slot).collect();
+    assert!(
+        slots.windows(2).all(|w| w[0] <= w[1]),
+        "the descent handed back transactions out of ledger order: {slots:?}"
+    );
+
+    let rebuilt = helix_indexer::Analytics::replay(
+        descended
+            .iter()
+            .map(|t| (t.signature.as_str(), t.events.as_slice())),
+    );
+
+    assert_eq!(
+        rebuilt.tvl(&live.pool),
+        forward.finalized().tvl(&live.pool),
+        "the two traversals disagree about how much is staked"
+    );
+    assert_eq!(
+        rebuilt.applied_count(),
+        forward.finalized().applied_count(),
+        "the descent saw a different number of events than the live poll"
+    );
+    assert_eq!(
+        rebuilt.pools.len(),
+        forward.finalized().pools.len(),
+        "the descent missed a pool"
+    );
+
+    // And against the chain, not only against the other traversal — two
+    // traversals sharing a bug would agree with each other perfectly.
+    let pool: Pool = live.cluster.account(live.pool).expect("pool account");
+    assert_eq!(rebuilt.tvl(&live.pool), pool.total_staked);
+}
+
+/// A descent that stops mid-history resumes from what it persisted.
+///
+/// The `backfill` cursor is the second one the schema has always had room for,
+/// and the property that makes it worth storing is this: a process restarted
+/// half way down does not begin again at the tip. Asserted by descending in two
+/// runs and comparing against one.
+#[test]
+fn a_descent_resumes_from_its_persisted_position() {
+    let mut live = Live::bootstrap(cluster_or_skip!());
+    let (owner, tokens) = live.staker(10_000_000);
+    live.stake(&owner, &tokens, 0, 1_000_000, LockTier::Flexible);
+    live.cluster
+        .wait_for_finality()
+        .expect("the cluster did not finalise");
+
+    let descend = |from: Option<helix_indexer::Descent>, pages: usize| {
+        let mut source = RpcLogSource::new(live.cluster.url()).with_page_size(2);
+        let mut backfill = from.map_or_else(Backfill::new, Backfill::resume_at);
+        let mut collected: Vec<SettledTransaction> = Vec::new();
+
+        for _ in 0..pages {
+            let batch = backfill.step(&mut source, 2).expect("descend");
+            let mut older = batch.transactions;
+            older.extend(collected);
+            collected = older;
+            if batch.complete {
+                break;
+            }
+        }
+        (
+            backfill.descent().clone(),
+            collected,
+            backfill.is_complete(),
+        )
+    };
+
+    let (_, single, complete) = descend(None, 256);
+    assert!(complete, "the one-shot descent did not finish");
+
+    // Two pages, then stop — the only thing carried across is what a store would
+    // have written to the `backfill` row.
+    let (persisted, first_half, done) = descend(None, 2);
+    assert!(!done, "the ledger is too short to test resumption");
+
+    let (_, second_half, finished) = descend(Some(persisted), 256);
+    assert!(finished, "the resumed descent did not finish");
+
+    let mut rejoined = second_half;
+    rejoined.extend(first_half);
+
+    assert_eq!(
+        rejoined.iter().map(|t| &t.signature).collect::<Vec<_>>(),
+        single.iter().map(|t| &t.signature).collect::<Vec<_>>(),
+        "resuming produced a different history than descending in one run"
     );
 }

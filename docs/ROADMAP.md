@@ -216,7 +216,7 @@ nothing yet talks to a cluster or a database.
 | 4.0 | Event decoding and log attribution, reconciled against the chain | 1.5d | ✅ Done |
 | 4.1 | Event subscriber over RPC logs, with reorg handling | 1.5d | ✅ Done — [`rpc.rs`](../indexer/src/rpc.rs) + `helix-index`, verified against a validator |
 | 4.2 | Postgres schema + idempotent upserts keyed on `(signature, log_index)` | 1d | ✅ Done — [`store.rs`](../indexer/src/store.rs), 9 tests against a real database |
-| 4.3 | Backfill from genesis slot, resumable | 1d | ◐ Paging and cursor resumption tested against a live cluster and durable across a restart; the second, downward cursor the schema allows is unwritten |
+| 4.3 | Backfill from genesis slot, resumable | 1d | ◐ The downward traversal is written, mutation-tested and verified against a validator; its store binding is not, so it resumes in memory and not across a restart |
 | 4.4 | Read API: TVL, APR, staker distribution, proposal history, treasury flows | 1d | ✅ Done — [`api.rs`](../indexer/src/api.rs) + an axum transport behind the `server` feature |
 
 **4.0 is deliberately the half that can be verified without a cluster.** Ingestion cannot
@@ -319,8 +319,41 @@ two events recording that governance now answers only to itself. Both would have
 `Anomaly::UndecodableData`. `event_coverage.rs` now compares the decoder's list against the
 IDLs, so the class cannot recur.
 
-Medium confidence on 4.3's remainder because it depends on RPC provider behaviour (log
-retention, webhook reliability) that is hard to predict from outside.
+**4.3 is the second cursor, and it is a second *traversal* — which is the thing that was
+not obvious.** The schema has always had room for a `backfill` row moving downward while
+`live` moves up, and the temptation is to read that as one mechanism run in two directions.
+It is not, for a reason that shows up as a wrong number rather than an error.
+
+The projection is replay-safe by *assignment*: events carry running totals, so folding one
+twice sets the same field to the same value. That is what makes redelivery harmless and it
+depends entirely on ledger order. Fold an older `RewardRateChanged` after a newer one and
+the newer rate is overwritten by the older — silently, and with every figure still looking
+ordinary. A descent delivers pages in progressively older order, so folding as it goes is
+precisely that bug.
+
+So `Backfill` owns no projection. It yields settled transactions for the `events` table,
+whose key is `(signature, log_index)` and whose stated purpose is that everything else is
+derivable from it — a destination where order does not matter — and `Analytics::replay`
+rebuilds from those rows in slot order. A test folds a real descent both ways and asserts
+the ordered one agrees with a forward pass while the arrival-ordered one does not, so the
+precondition is held to arithmetic rather than to a comment.
+
+Writing it also found the terminating condition is not the obvious one. A page consisting
+entirely of *failed* transactions has nothing to fold and is not the end of history —
+ordinary for a program someone is spamming — so a descent that reads "no transactions" as
+"no more history" stops early and reports the rest complete. `DescentPage` therefore carries
+the range it covered separately from its contents.
+
+Verified against a validator: a descent from the tip to genesis reconstructs the projection
+the live poll builds, and both agree with `Pool.total_staked` read off the chain. Two
+mutations — pages handed back newest-first, and the next page's bound taken before
+truncation rather than after — each fail those assertions.
+
+**What is left of 4.3 is the store binding**, which is the half that needs a database. The
+`backfill` cursor has no writer, so a descent resumes in memory and not across a restart,
+and nothing yet clears `partial_history` when one completes. Medium confidence on the rest
+because it also depends on RPC provider behaviour — log retention in particular — that is
+hard to predict from outside.
 
 ## Phase 5 — Dashboard
 

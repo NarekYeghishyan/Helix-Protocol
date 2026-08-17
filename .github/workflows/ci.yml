@@ -93,7 +93,7 @@ jobs:
     # clean checkout green — but a test that always skips is a test that has
     # stopped running. A service container is the one piece of external
     # infrastructure CI can supply cheaply, so it does. (A validator is not: the
-    # six RPC tests still skip here and are run locally.)
+    # eight RPC tests still skip here and are run locally.)
     services:
       postgres:
         image: postgres:16-alpine
@@ -180,7 +180,7 @@ jobs:
       # benchmarks that assert every instruction stays inside its budget.
       #
       # HELIX_DATABASE_URL points at the service container above, so the ten
-      # storage tests run rather than skip. The six RPC tests still skip — they
+      # storage tests run rather than skip. The eight RPC tests still skip — they
       # need a validator, which is run locally (see docs/TESTING.md). Skipping is
       # reported by the test itself rather than by an `#[ignore]`, so the reason
       # is in the output rather than in a flag someone has to know about.
