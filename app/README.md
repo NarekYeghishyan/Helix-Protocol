@@ -5,7 +5,7 @@ vote.
 
 ```bash
 npm install --ignore-scripts   # see "Install notes" below
-npm test                       # 72 tests, no test framework installed
+npm test                       # 92 tests, no test framework installed
 npm run typecheck
 npm run build
 npm run dev                    # http://localhost:3000
@@ -215,8 +215,36 @@ mint or a minter that the *vote* chose, and a generic button would mean the UI p
 accounts a proposal already decided — so they are refused with that reason rather than
 hidden.
 
+## The proposal form is derived from the IDL, not typed out
+
+`governance/README.md` justifies the closed `ProposalAction` enum this way:
+
+> the set of things governance *can* do is fixed at deploy time and visible in the IDL, so a
+> voter reads the variant and knows the blast radius.
+
+A hand-written form would be a second copy of that set, and the second copy is the one that
+goes stale — a variant added to the program would simply be unreachable from the UI with
+nothing failing. So [`proposal.ts`](./src/lib/proposal.ts) reads the variants and their field
+types out of the IDL and [`propose.tsx`](./src/components/propose.tsx) renders what it finds,
+flattening one level of nesting for `UpdateRealmParams`.
+
+It refuses to guess semantics. An `i64` is rendered as seconds with **both** readings shown —
+`end_ts` is a moment, `epoch_duration` is a length, and the IDL cannot tell them apart.
+Picking one would be right most of the time.
+
+Parsing is where the bugs would be, so every branch refuses rather than coerces: a blank
+field is an error rather than `BigInt("") === 0n`, a decimal amount is an error rather than a
+truncation, and an address has to round-trip its own base58. These values end up in a
+proposal people vote on.
+
+**Building it found a defect in the program.** `create_proposal` reported a wrong
+`proposal_id` as `MathOverflow` — the same mistake `stake.rs` had already corrected for
+`position_id`. Fixing that found a better one: the check cannot fire for the case it looks
+like it covers, because the proposal PDA is seeded on the id and `init` refuses a taken
+account first. See
+[TESTING.md](../docs/TESTING.md#the-check-that-looked-like-it-caught-a-race-and-did-not).
+
 ## Not built yet
 
-Creating a proposal from the UI. It needs a position above `min_weight_to_propose` and an
-action to be composed, which is a form rather than a button, and the `ProposalAction`
-variant set is what makes it worth designing properly.
+Nothing in the governance or staking surface. What remains is the browser wallet itself —
+see above.

@@ -26,6 +26,7 @@ import {
   LOCK_TIERS,
   buildAdvance,
   buildClaim,
+  buildCreateProposal,
   buildClosePosition,
   buildStake,
   buildUnstake,
@@ -33,6 +34,7 @@ import {
   poolAddress,
   positionAddress,
   whyCannotAdvance,
+  whyCannotPropose,
   whyCannotVote,
   type AdvanceKind,
 } from "./actions.ts";
@@ -442,6 +444,108 @@ test("the vote gates refuse exactly what the program refuses", () => {
     whyCannotVote(proposal({ state: { kind: "Queued" } }), position(), now) ?? "",
     /is Queued, not open for voting/,
   );
+});
+
+// ------------------------------------------------------------ create proposal
+
+test("create_proposal matches the CreateProposal accounts struct", () => {
+  const held = positionAddress(pool(), OWNER, 2n);
+  const ix = buildCreateProposal({
+    realm: realm(),
+    proposerPosition: held,
+    proposer: OWNER,
+    action: { kind: "Signal" },
+    title: "Fund the audit",
+    descriptorUri: "https://example.invalid/1",
+  }).instructions[0];
+
+  // proposal.rs — realm(mut), proposer(mut, Signer), proposer_position,
+  // owner, proposal(init), system_program.
+  assert.deepEqual(shape(ix.keys), [
+    `w- ${REALM.toBase58()}`,
+    `ws ${OWNER.toBase58()}`,
+    `-- ${held.toBase58()}`,
+    // `has_one = owner` ties this to the position, and the handler requires it
+    // to equal the signer — so the only correct value is the proposer.
+    `-- ${OWNER.toBase58()}`,
+    `w- ${pda(
+      [Buffer.from("proposal"), REALM.toBytes(), u64le(3n)],
+      GOVERNANCE_PROGRAM_ID,
+    ).toBase58()}`,
+    `-- ${SYSTEM_PROGRAM_ID.toBase58()}`,
+  ]);
+});
+
+test("the proposal id is the realm's current count, which is what the program requires", () => {
+  // The same race `stake` has. Until this flow was written the program reported
+  // a stale id as `MathOverflow` — the defect `stake.rs` had already corrected
+  // for `position_id` and never carried across. It is `UnexpectedProposalId` now.
+  for (const count of [0n, 3n, 2n ** 53n + 1n]) {
+    const prepared = buildCreateProposal({
+      realm: { ...realm(), proposal_count: count },
+      proposerPosition: positionAddress(pool(), OWNER, 2n),
+      proposer: OWNER,
+      action: { kind: "Signal" },
+      title: "t",
+      descriptorUri: "",
+    });
+
+    assert.deepEqual([...prepared.instructions[0].data.subarray(8, 16)], [...u64le(count)]);
+    assert.ok(
+      prepared.instructions[0].keys[4].pubkey.equals(
+        pda([Buffer.from("proposal"), REALM.toBytes(), u64le(count)], GOVERNANCE_PROGRAM_ID),
+      ),
+    );
+  }
+});
+
+test("the title and link are borsh strings, length-prefixed", () => {
+  const ix = buildCreateProposal({
+    realm: realm(),
+    proposerPosition: positionAddress(pool(), OWNER, 2n),
+    proposer: OWNER,
+    action: { kind: "Signal" },
+    title: "abc",
+    descriptorUri: "de",
+  }).instructions[0];
+
+  assert.deepEqual(
+    [...ix.data.subarray(8)],
+    [
+      // proposal_id: u64 = 3
+      3, 0, 0, 0, 0, 0, 0, 0,
+      // action: Signal, the first variant
+      0,
+      // title: 4-byte length then utf-8
+      3, 0, 0, 0, 0x61, 0x62, 0x63,
+      // descriptor_uri
+      2, 0, 0, 0, 0x64, 0x65,
+    ],
+  );
+});
+
+test("the proposal gates are counted in bytes, as the program counts them", () => {
+  const r = realm();
+  const enough = position({ weighted_amount: r.min_weight_to_propose });
+  const short = position({ weighted_amount: r.min_weight_to_propose - 1n });
+
+  assert.equal(whyCannotPropose(r, enough, "A title", ""), null);
+  assert.match(whyCannotPropose(r, short, "A title", "") ?? "", /minimum weight|requires/);
+  assert.match(whyCannotPropose(r, null, "A title", "") ?? "", /Select a position/);
+  assert.match(whyCannotPropose(r, enough, "   ", "") ?? "", /title is required/);
+
+  // 64 bytes exactly is accepted; 65 is not. `title.len()` on a Rust String is a
+  // byte count, so a 64-*character* title of non-ASCII text is over the limit —
+  // and a UI counting characters would pass it here and fail on chain.
+  assert.equal(whyCannotPropose(r, enough, "a".repeat(64), ""), null);
+  assert.match(whyCannotPropose(r, enough, "a".repeat(65), "") ?? "", /65 bytes/);
+
+  // "é" is two bytes in UTF-8, so 33 of them exceed 64 while being 33 characters.
+  const accented = "é".repeat(33);
+  assert.equal(accented.length, 33);
+  assert.match(whyCannotPropose(r, enough, accented, "") ?? "", /66 bytes/);
+
+  assert.match(whyCannotPropose(r, enough, "t", "u".repeat(201)) ?? "", /201 bytes/);
 });
 
 // --------------------------------------------------------- lifecycle moves

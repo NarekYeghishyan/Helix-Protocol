@@ -114,15 +114,21 @@ export function decodeTransactionError(
 
     // Error 0 from the system program is `Allocate: account already in use`,
     // which is what an Anchor `init` returns when the account exists. It is the
-    // most reachable failure in this whole UI — a second vote from the same
-    // position, or a stake against a `position_id` another transaction just
-    // took — and it decodes to nothing at all without this case, because the
-    // system program has no IDL.
+    // most reachable failure in this whole UI, and it decodes to nothing at all
+    // without this case, because the system program has no IDL.
+    //
+    // Three different flows land here, and they are the same fact each time: the
+    // account this instruction creates is seeded on something already taken. A
+    // second vote from one position, a stake against a `position_id` another
+    // transaction just claimed, a proposal at an id someone else reached first.
+    // Governance's own `UnexpectedProposalId` never fires for that last one —
+    // `init` gets there first — which is exactly why this message has to cover
+    // it.
     if (custom === 0 && failing === SYSTEM_PROGRAM_ID.toBase58()) {
       return {
         message:
-          "That account already exists. A vote from this position, or this position id, " +
-          "has already been created.",
+          "That account already exists — a vote from this position, this position id, or " +
+          "this proposal id has been taken. Reload and try again.",
         code: 0,
         program: "system",
         instructionIndex: index,

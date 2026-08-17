@@ -553,3 +553,71 @@ fn finalizing_while_voting_is_still_open_is_refused() {
         .expect_err("finalizing early must fail");
     assert!(err.contains("VotingStillOpen"), "unexpected failure: {err}");
 }
+
+/// Losing the race for a proposal id fails at account creation, not at the
+/// handler's check — and that is worth pinning, because it is not what the check
+/// looks like it does.
+///
+/// `create_proposal` requires `proposal_id == realm.proposal_count`. The obvious
+/// reading is that this catches two people drafting against the same realm. It
+/// does not: the proposal PDA is seeded on `proposal_id`, so the loser's account
+/// already exists and Anchor's `init` refuses it inside `try_accounts`, before
+/// the handler body runs at all. The failure is the system program's
+/// "already in use" — the same structural refusal that makes double voting
+/// impossible.
+///
+/// Written down because the other test below asserts the handler check, and a
+/// reader would otherwise reasonably assume it covers this case too.
+#[test]
+fn losing_the_race_for_a_proposal_id_is_refused_at_account_creation() {
+    let mut sys = System::bootstrap(None, 0);
+    let position = sys.stake(0, STAKE, LockTier::Gold);
+
+    // Someone else got there first: the realm's counter is now 1, and the PDA
+    // for id 0 is occupied.
+    sys.create_proposal(0, ProposalAction::Signal, position);
+
+    let ix = sys.create_proposal_ix(0, ProposalAction::Signal, position);
+    let voter = sys.voter.insecure_clone();
+    let err = sys
+        .env
+        .try_send(&[ix], &[&voter])
+        .expect_err("reusing a proposal id must fail");
+
+    assert!(
+        err.contains("already in use"),
+        "expected init to refuse this before the handler ran: {err}"
+    );
+}
+
+/// An id *ahead* of the counter is what the handler check actually catches, and
+/// it now says so rather than reporting arithmetic overflow.
+///
+/// Until a dashboard tried to create a proposal this returned `MathOverflow` —
+/// the exact defect `stake.rs` had already corrected for `position_id`, where the
+/// comment reads that telling someone their arithmetic overflowed "sends them
+/// looking in the wrong place entirely". The lesson had not been carried across.
+///
+/// Reachable whenever a client computes the id from anything but a fresh read of
+/// `realm.proposal_count` — an indexer's count, a cached realm, a guess.
+#[test]
+fn a_proposal_id_beyond_the_counter_is_named_rather_than_reported_as_overflow() {
+    let mut sys = System::bootstrap(None, 0);
+    let position = sys.stake(0, STAKE, LockTier::Gold);
+
+    let ix = sys.create_proposal_ix(1, ProposalAction::Signal, position);
+    let voter = sys.voter.insecure_clone();
+    let err = sys
+        .env
+        .try_send(&[ix], &[&voter])
+        .expect_err("skipping a proposal id must fail");
+
+    assert!(
+        err.contains("UnexpectedProposalId"),
+        "a mis-computed id should name itself: {err}"
+    );
+    assert!(
+        !err.contains("MathOverflow"),
+        "the misleading error is back: {err}"
+    );
+}

@@ -67,4 +67,11 @@ pub enum GovernanceError {
 
     #[msg("Arithmetic overflow")]
     MathOverflow,
+
+    // Appended, never inserted. Anchor numbers these in declaration order from
+    // 6000, so inserting one silently renumbers every error after it — and any
+    // client, log or runbook holding the old number starts naming a different
+    // failure. The same note is on `StakingError` for the same reason.
+    #[msg("proposal_id must equal the realm's current proposal_count")]
+    UnexpectedProposalId,
 }

@@ -203,6 +203,17 @@ button.primary { background: var(--accent); color: #fff; border-color: var(--acc
 }
 .position-head { display: flex; align-items: baseline; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 0.5rem; }
 
+.field select {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.4rem 0.55rem;
+  font: inherit;
+  font-size: 0.85rem;
+}
+.check { display: flex; align-items: center; gap: 0.4rem; margin-bottom: 0.9rem; }
+
 .tally { display: flex; gap: 1rem; flex-wrap: wrap; font-size: 0.85rem; margin: 0.5rem 0; font-variant-numeric: tabular-nums; }
 
 /* The preview. Deliberately not a toast: a refusal is usually the most useful
